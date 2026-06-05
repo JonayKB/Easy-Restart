@@ -1,115 +1,164 @@
-# Spark-REST
+# EasyRestart
 
-A lightweight Forge mod for **Minecraft 1.20.1**, created by **JonayKB**, that exposes server performance metrics from the **Spark** profiler through a simple REST API.
+**Automated server restarts with cron scheduling, countdown warnings, and optional auto-relaunch.**
 
-This mod is intended for server administrators who want to monitor TPS, MSPT, CPU usage, and more using external dashboards or monitoring tools.
-
----
-
-## 📌 Features
-
-* Exposes Spark performance data over HTTP.
-* Returns TPS (10s, 1m, 5m, 15m), MSPT, and CPU usage.
-* Customizable port and endpoint.
-* Optional enable/disable through configuration.
-* Extremely lightweight and safe to use.
+EasyRestart is a server-side Forge mod that lets you schedule Minecraft server restarts using standard cron expressions. Players receive configurable warnings before each restart, a final countdown with on-screen titles, and the server can automatically relaunch itself via a startup script you define.
 
 ---
 
-## 📦 Requirements
+## Features
 
-* **Minecraft Forge 1.20.1**
-* **Spark mod** installed on the server
-* Java 17+
-
-> ⚠️ Spark-REST does *not* include Spark. You must install Spark separately.
-
----
-
-## ⚙️ Installation
-
-1. Download `spark-rest.jar`.
-2. Place it in your server's `/mods/` folder.
-3. Ensure that **Spark** is also installed.
-4. Start the server to generate the configuration file.
+- **Cron-based scheduling** — define any number of restart times using standard 5-field cron syntax (`minute hour day month weekday`)
+- **Pre-warning broadcasts** — configurable list of minutes before restart at which players are notified (default: 10, 5, 1 minute)
+- **Final countdown** — 10-second countdown with chat messages and configurable on-screen titles
+- **Sound alerts** — plays a pling sound on each warning and countdown tick (can be disabled)
+- **Auto-relaunch** — optionally point the mod to a startup script; it will be launched as a detached process before the JVM shuts down, so the server comes back up automatically
+- **Forced shutdown watchdog** — if the server hangs during shutdown, a background watchdog forcefully terminates it after 120 seconds
+- **In-game commands** — add, remove, list, and reload cron rules without restarting; trigger an immediate restart with `/easyrestart now`
+- **Fully configurable messages** — all broadcast strings support placeholders and Minecraft color codes
 
 ---
 
-## 📝 Configuration
+## Installation
 
-After the first launch, a config file is generated at:
+1. Download the mod `.jar` and drop it into your server's `mods/` folder.
+2. Start the server once to generate the config file at `config/easy_restart-common.toml`.
+3. Edit the config to set your desired cron rules, messages, and (optionally) the restart script path.
+4. Restart the server — the scheduler will activate immediately.
 
-```
-config/spark_rest-common.toml
-```
-
-### Example:
-
-```
-[general]
-port = 8080
-endpoint = "metrics"
-enabled = true
-```
-
-### Options
-
-| Setting    | Description                        | Default |
-| ---------- | ---------------------------------- | ------- |
-| `port`     | Port on which the HTTP server runs | 8080    |
-| `endpoint` | Path used for exposing the metrics | metrics |
-| `enabled`  | Enables or disables the REST API   | true    |
+> **Server-side only.** Players do not need to install this mod.
 
 ---
 
-## 🔗 REST API Usage
+## Configuration
 
-Once the server is running, Spark-REST exposes metrics at:
+Config file: `config/easy_restart-common.toml`
 
-```
-http://<your-server-ip>:<port>/<endpoint>
-```
+### General
 
-### Example:
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enableSounds` | `true` | Play sound alerts on warnings and countdown ticks |
+| `enableTitles` | `true` | Show on-screen title during the final 10-second countdown |
+| `preWarningMinutes` | `[10, 5, 1]` | Minutes before restart at which broadcast warnings are sent |
+| `restartScriptPath` | `""` | Path to the script that starts the server. Accepts absolute or relative paths. Leave empty to disable auto-relaunch |
 
-```
-http://localhost:8080/metrics
-```
+### Cron Rules
 
-### Example JSON Response:
+| Key | Default | Description |
+|-----|---------|-------------|
+| `rules` | `["0 3 * * *"]` | List of cron expressions. Multiple rules are supported |
 
-```json
-{
-  "tps_10s": 20.0,
-  "tps_1m": 19.95,
-  "tps_5m": 19.87,
-  "tps_15m": 19.76,
-  "mspt_1m": 12.4,
-  "cpu": 45.2
-}
-```
+### Messages
 
----
+| Key | Placeholders | Description |
+|-----|-------------|-------------|
+| `preWarning` | `{minutes}` | Broadcast when a pre-warning threshold is reached |
+| `finalCountdown` | `{seconds}` | Broadcast each second during the final 10-second countdown |
+| `restartNow` | — | Broadcast when an immediate restart is triggered |
+| `scheduledStart` | — | Broadcast when a restart is first scheduled |
 
-## ❓ FAQ
-
-### **Q: Spark-REST returns an error / no metrics**
-
-A: Ensure the **Spark** mod is installed. Spark-REST depends on Spark's API.
-
-### **Q: The port is already in use**
-
-A: Change the `port` value in the config file.
+All messages support Minecraft color codes (`§a`, `§c`, etc.).
 
 ---
 
-## 🧑‍💻 Author
+## Cron Syntax
 
-**JonayKB**
+EasyRestart uses standard 5-field POSIX cron expressions:
 
-If you enjoy the mod, feel free to report issues or suggest improvements!
+```
+┌─ minute   (0–59)
+│ ┌─ hour   (0–23)
+│ │ ┌─ day of month (1–31)
+│ │ │ ┌─ month (1–12)
+│ │ │ │ ┌─ day of week (0=Sun … 6=Sat)
+│ │ │ │ │
+* * * * *
+```
+
+**Examples:**
+
+| Expression | Meaning |
+|-----------|---------|
+| `0 3 * * *` | Every day at 03:00 |
+| `0 */6 * * *` | Every 6 hours (00:00, 06:00, 12:00, 18:00) |
+| `30 8 * * 1` | Every Monday at 08:30 |
+| `0 4 * * 1,4` | Every Monday and Thursday at 04:00 |
+| `0 2,14 * * *` | Every day at 02:00 and 14:00 |
 
 ---
 
-## 📄 License
-[License](LICENSE)
+## Auto-Relaunch Setup
+
+To make the server restart automatically after shutdown:
+
+### Linux / macOS
+
+1. Create a startup script (e.g. `start.sh`) in your server root:
+
+```bash
+#!/bin/bash
+cd "$(dirname "$0")"
+java -Xmx4G -Xms1G -jar server.jar nogui
+```
+
+2. Make it executable:
+
+```bash
+chmod +x start.sh
+```
+
+3. Set the config option:
+
+```toml
+restartScriptPath = "start.sh"
+# or absolute: restartScriptPath = "/home/mc/server/start.sh"
+```
+
+### Windows
+
+1. Create a `start.bat` in your server root:
+
+```bat
+@echo off
+cd /d "%~dp0"
+java -Xmx4G -Xms1G -jar server.jar nogui
+```
+
+2. Set the config option:
+
+```toml
+restartScriptPath = "start.bat"
+# or absolute: restartScriptPath = "C:/servers/minecraft/start.bat"
+```
+
+> **Note:** The script is launched as a detached process before the JVM exits, so it will survive the server shutdown. Make sure the script is not run inside a session manager (like `screen` or `tmux`) that would die with the parent process — or wrap the script launch in a new `screen`/`tmux` session if needed.
+
+---
+
+## Commands
+
+All commands require operator permission level 2.
+
+| Command | Description |
+|---------|-------------|
+| `/easyrestart add <cron>` | Add a new cron rule |
+| `/easyrestart remove <id>` | Remove a cron rule by its list index |
+| `/easyrestart list` | List all active cron rules with their IDs |
+| `/easyrestart reload` | Reload rules from the config file |
+| `/easyrestart now` | Trigger an immediate restart |
+| `/easyrestart help` | Show command usage |
+
+---
+
+## Compatibility
+
+- **Minecraft:** 1.20.x
+- **Mod loader:** Forge
+- **Side:** Server only
+
+---
+
+## License
+
+MIT License — free to use, modify, and distribute.
