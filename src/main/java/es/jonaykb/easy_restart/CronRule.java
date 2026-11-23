@@ -18,8 +18,8 @@ public class CronRule {
     private static final int SEARCH_YEARS = 8;
 
     private final String raw;
-    /** True for rules that only warn players (e.g. the machine itself reboots at that time). */
-    private final boolean warnOnly;
+    /** What happens when the rule fires: restart, stop, or only warn. */
+    private final RuleType type;
     private final BitSet minutes;
     private final BitSet hours;
     private final BitSet daysOfMonth;
@@ -33,16 +33,16 @@ public class CronRule {
      *                                  range, or can never run.
      */
     public CronRule(String rule) {
-        this(rule, false);
+        this(rule, RuleType.RESTART);
     }
 
     /**
-     * @param warnOnly true if this rule only warns players and never restarts the server.
+     * @param type what happens when the rule fires.
      * @throws IllegalArgumentException if the expression is malformed, out of
      *                                  range, or can never run.
      */
-    public CronRule(String rule, boolean warnOnly) {
-        this.warnOnly = warnOnly;
+    public CronRule(String rule, RuleType type) {
+        this.type = type;
         this.raw = rule.trim();
         String[] parts = raw.split("\\s+");
         if (parts.length != 5) {
@@ -70,12 +70,16 @@ public class CronRule {
         return raw;
     }
 
-    public boolean isWarnOnly() {
-        return warnOnly;
+    public RuleType getType() {
+        return type;
     }
 
-    /** A scheduled run: when, and whether it only warns or really restarts. */
-    public record Run(LocalDateTime time, boolean warnOnly) {
+    public boolean isWarnOnly() {
+        return type == RuleType.WARN_ONLY;
+    }
+
+    /** A scheduled run: when, and what it does. */
+    public record Run(LocalDateTime time, RuleType type) {
     }
 
     public boolean matches(LocalDateTime time) {
@@ -147,21 +151,21 @@ public class CronRule {
 
     /**
      * Next run among {@code rules} after {@code from}, skipping {@code skipped} times.
-     * If a restart rule and a warn-only rule fall on the same minute, the restart wins.
+     * If rules of different types fall on the same minute: stop beats restart, and
+     * both beat warn-only.
      */
     public static Run nextRun(Collection<CronRule> rules, LocalDateTime from, Collection<LocalDateTime> skipped) {
         LocalDateTime time = earliestNext(rules, from, skipped);
         if (time == null) {
             return null;
         }
-        boolean warnOnly = true;
+        RuleType winner = null;
         for (CronRule rule : rules) {
-            if (!rule.warnOnly && rule.matches(time)) {
-                warnOnly = false;
-                break;
+            if (rule.matches(time) && (winner == null || rule.type.outranks(winner))) {
+                winner = rule.type;
             }
         }
-        return new Run(time, warnOnly);
+        return new Run(time, winner);
     }
 
     private static boolean isWildcard(String field) {
@@ -229,6 +233,6 @@ public class CronRule {
 
     @Override
     public String toString() {
-        return "CronRule{" + raw + (warnOnly ? ", warn only" : "") + '}';
+        return "CronRule{" + raw + ", " + type.label() + '}';
     }
 }

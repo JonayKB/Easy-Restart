@@ -22,12 +22,16 @@ public class ModConfig {
                 public final ForgeConfigSpec.BooleanValue enableTitles;
                 public final ForgeConfigSpec.ConfigValue<List<? extends Integer>> preWarningMinutes;
                 public final ForgeConfigSpec.ConfigValue<List<? extends String>> cronRules;
+                public final ForgeConfigSpec.ConfigValue<List<? extends String>> stopRules;
                 public final ForgeConfigSpec.ConfigValue<List<? extends String>> warnOnlyRules;
                 public final ForgeConfigSpec.ConfigValue<String> msgPreWarning;
                 public final ForgeConfigSpec.ConfigValue<String> msgFinalCountdown;
                 public final ForgeConfigSpec.ConfigValue<String> msgRestartNow;
                 public final ForgeConfigSpec.ConfigValue<String> msgScheduledStart;
                 public final ForgeConfigSpec.ConfigValue<String> msgCancelled;
+                public final ForgeConfigSpec.ConfigValue<String> msgStopWarning;
+                public final ForgeConfigSpec.ConfigValue<String> msgStopCountdown;
+                public final ForgeConfigSpec.ConfigValue<String> msgStopNow;
 
                 public final ForgeConfigSpec.ConfigValue<String> restartScriptPath;
 
@@ -67,12 +71,20 @@ public class ModConfig {
                                                         Arrays.asList("0 3 * * *"),
                                                         obj -> obj instanceof String);
 
+                        stopRules = builder
+                                        .comment("Cron rules that warn players and stop the server WITHOUT relaunching it,",
+                                                        "even if restartScriptPath is set. E.g. stop cleanly at 2:58 before the",
+                                                        "machine reboots at 3:00 -> \"58 2 * * *\".")
+                                        .defineList("stopRules",
+                                                        Arrays.asList(),
+                                                        obj -> obj instanceof String);
+
                         warnOnlyRules = builder
                                         .comment("Cron rules that only warn players, with the same warnings and countdown,",
                                                         "but never restart the server. Use them when something else restarts it,",
                                                         "e.g. the machine reboots itself at 3:00 -> \"0 3 * * *\".",
                                                         "The world is saved when the final countdown starts.",
-                                                        "If a restart rule and a warn-only rule match the same minute, the restart wins.")
+                                                        "If rules of different types match the same minute: stop > restart > warn-only.")
                                         .defineList("warnOnlyRules",
                                                         Arrays.asList(),
                                                         obj -> obj instanceof String);
@@ -101,6 +113,18 @@ public class ModConfig {
                                         .comment("Broadcast when a pending restart is cancelled with /easyrestart cancel,",
                                                         "only if players had already been warned about it.")
                                         .define("cancelled", "§aSe ha cancelado el reinicio del servidor.");
+
+                        msgStopWarning = builder
+                                        .comment("Like preWarning, for stop rules. Placeholder: {minutes}")
+                                        .define("stopWarning", "§eEl servidor se apagará en §c{minutes} §eminutos.");
+
+                        msgStopCountdown = builder
+                                        .comment("Like finalCountdown, for stop rules. Placeholder: {seconds}")
+                                        .define("stopCountdown", "§6Apagado en §c{seconds} §6segundos...");
+
+                        msgStopNow = builder
+                                        .comment("Broadcast when a stop rule shuts the server down.")
+                                        .define("stopNow", "§cEl servidor se apaga ahora.");
 
                         builder.pop();
                 }

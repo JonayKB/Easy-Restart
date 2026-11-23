@@ -38,14 +38,13 @@ public class RestartManager {
 
     /** Schedules a cron restart. Ignored while a manual restart is pending. */
     public void beginScheduledRestart(MinecraftServer server, LocalDateTime scheduledTime) {
-        beginScheduledRestart(server, scheduledTime, false);
+        beginScheduledRestart(server, scheduledTime, RuleType.RESTART);
     }
 
-    /** Schedules a cron run, real or warn-only. Ignored while a manual restart is pending. */
-    public void beginScheduledRestart(MinecraftServer server, LocalDateTime scheduledTime, boolean warnOnly) {
-        if (!stopping && timer.scheduleCron(scheduledTime, warnOnly)) {
-            LOGGER.info("EasyRestart: Next {} scheduled at {}", warnOnly ? "restart warning (no restart)" : "restart",
-                    scheduledTime);
+    /** Schedules a cron run (restart, stop or warn-only). Ignored while a manual restart is pending. */
+    public void beginScheduledRestart(MinecraftServer server, LocalDateTime scheduledTime, RuleType type) {
+        if (!stopping && timer.scheduleCron(scheduledTime, type)) {
+            LOGGER.info("EasyRestart: Next run ({}) scheduled at {}", type.label(), scheduledTime);
         }
     }
 
@@ -90,10 +89,11 @@ public class RestartManager {
         RestartTimer.Action action = timer.tick(LocalDateTime.now(), ModConfig.SERVER.preWarningMinutes.get());
         switch (action.kind()) {
             case WARNING -> {
-                broadcast(server, ModConfig.SERVER.msgPreWarning.get()
+                boolean stop = timer.getType() == RuleType.STOP;
+                broadcast(server, (stop ? ModConfig.SERVER.msgStopWarning : ModConfig.SERVER.msgPreWarning).get()
                         .replace("{minutes}", String.valueOf(action.value())));
                 playSound(server);
-                LOGGER.info("EasyRestart: Server restart in {} minute(s).", action.value());
+                LOGGER.info("EasyRestart: Server {} in {} minute(s).", stop ? "stop" : "restart", action.value());
             }
             case COUNTDOWN -> {
                 if (timer.isWarnOnly() && !timer.getRestartTime().equals(savedForWarnOnly)) {
@@ -103,13 +103,18 @@ public class RestartManager {
                     LOGGER.info("EasyRestart: Warn-only run in {}s, saving the world.", action.value());
                     server.saveEverything(false, true, true);
                 }
-                broadcast(server, ModConfig.SERVER.msgFinalCountdown.get()
+                boolean stop = timer.getType() == RuleType.STOP;
+                broadcast(server, (stop ? ModConfig.SERVER.msgStopCountdown : ModConfig.SERVER.msgFinalCountdown).get()
                         .replace("{seconds}", String.valueOf(action.value())));
                 showTitle(server, "§c" + action.value());
                 playSound(server);
-                LOGGER.info("EasyRestart: Server restart in {} seconds.", action.value());
+                LOGGER.info("EasyRestart: Server {} in {} seconds.", stop ? "stop" : "restart", action.value());
             }
-            case EXECUTE -> executeRestart(server);
+            case EXECUTE -> executeRestart(server, true);
+            case STOP -> {
+                broadcast(server, ModConfig.SERVER.msgStopNow.get());
+                executeRestart(server, false);
+            }
             case WARN_ONLY_DONE -> {
                 broadcast(server, ModConfig.SERVER.msgRestartNow.get());
                 LOGGER.info("EasyRestart: Warn-only run reached; the server keeps running.");
@@ -120,13 +125,14 @@ public class RestartManager {
         }
     }
 
-    private void executeRestart(MinecraftServer server) {
-        LOGGER.info("EasyRestart: Executing restart");
+    /** Stops the server; with {@code relaunch} the restart script runs once it has stopped. */
+    private void executeRestart(MinecraftServer server, boolean relaunch) {
+        LOGGER.info(relaunch ? "EasyRestart: Executing restart" : "EasyRestart: Stopping the server (no relaunch)");
         stopping = true;
 
         // The script is launched once the server has fully stopped (see onServerStopped),
         // so the new instance doesn't find the port and the world lock still taken.
-        scriptPending.set(true);
+        scriptPending.set(relaunch);
         startForcedShutdownWatchdog();
 
         server.halt(false);
@@ -250,6 +256,10 @@ public class RestartManager {
 
     public boolean isWarnOnly() {
         return timer.isWarnOnly();
+    }
+
+    public RuleType getType() {
+        return timer.getType();
     }
 
     public boolean isManualRestart() {

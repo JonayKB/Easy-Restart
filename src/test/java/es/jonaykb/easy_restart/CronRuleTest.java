@@ -164,37 +164,79 @@ class CronRuleTest {
 
     @Test
     void nextRunKeepsTheRuleType() {
-        List<CronRule> rules = List.of(new CronRule("0 3 * * *", true), new CronRule("0 15 * * *", false));
-        assertEquals(new CronRule.Run(LocalDateTime.of(2026, 11, 23, 15, 0), false),
+        List<CronRule> rules = List.of(new CronRule("0 3 * * *", RuleType.WARN_ONLY), new CronRule("0 15 * * *", RuleType.RESTART));
+        assertEquals(new CronRule.Run(LocalDateTime.of(2026, 11, 23, 15, 0), RuleType.RESTART),
                 CronRule.nextRun(rules, FROM, Set.of()));
-        assertEquals(new CronRule.Run(LocalDateTime.of(2026, 11, 24, 3, 0), true),
+        assertEquals(new CronRule.Run(LocalDateTime.of(2026, 11, 24, 3, 0), RuleType.WARN_ONLY),
                 CronRule.nextRun(rules, LocalDateTime.of(2026, 11, 23, 15, 0), Set.of()));
     }
 
     @Test
     void restartWinsOverWarnOnlyOnTheSameMinute() {
         LocalDateTime threeAm = LocalDateTime.of(2026, 11, 24, 3, 0);
-        List<CronRule> rules = List.of(new CronRule("0 3 * * *", true), new CronRule("0 */3 * * *", false));
-        assertEquals(new CronRule.Run(LocalDateTime.of(2026, 11, 23, 15, 0), false),
+        List<CronRule> rules = List.of(new CronRule("0 3 * * *", RuleType.WARN_ONLY), new CronRule("0 */3 * * *", RuleType.RESTART));
+        assertEquals(new CronRule.Run(LocalDateTime.of(2026, 11, 23, 15, 0), RuleType.RESTART),
                 CronRule.nextRun(rules, FROM, Set.of()));
-        assertEquals(new CronRule.Run(threeAm, false),
+        assertEquals(new CronRule.Run(threeAm, RuleType.RESTART),
                 CronRule.nextRun(rules, LocalDateTime.of(2026, 11, 24, 2, 0), Set.of()));
     }
 
     @Test
     void onlyWarnRulesGiveWarnOnlyRuns() {
-        List<CronRule> rules = List.of(new CronRule("0 3 * * *", true));
+        List<CronRule> rules = List.of(new CronRule("0 3 * * *", RuleType.WARN_ONLY));
         CronRule.Run run = CronRule.nextRun(rules, FROM, Set.of());
-        assertTrue(run.warnOnly());
+        assertEquals(RuleType.WARN_ONLY, run.type());
         assertEquals(LocalDateTime.of(2026, 11, 24, 3, 0), run.time());
         assertFalse(new CronRule("0 3 * * *").isWarnOnly());
     }
 
     @Test
     void cancellingWarnOnlyRunSkipsIt() {
-        List<CronRule> rules = List.of(new CronRule("0 3 * * *", true));
+        List<CronRule> rules = List.of(new CronRule("0 3 * * *", RuleType.WARN_ONLY));
         LocalDateTime tomorrow = LocalDateTime.of(2026, 11, 24, 3, 0);
-        assertEquals(new CronRule.Run(tomorrow.plusDays(1), true), CronRule.nextRun(rules, FROM, Set.of(tomorrow)));
+        assertEquals(new CronRule.Run(tomorrow.plusDays(1), RuleType.WARN_ONLY), CronRule.nextRun(rules, FROM, Set.of(tomorrow)));
+    }
+
+    @Test
+    void stopRuleKeepsItsType() {
+        CronRule rule = new CronRule("58 2 * * *", RuleType.STOP);
+        assertEquals(RuleType.STOP, rule.getType());
+        assertFalse(rule.isWarnOnly());
+        assertEquals(new CronRule.Run(LocalDateTime.of(2026, 11, 24, 2, 58), RuleType.STOP),
+                CronRule.nextRun(List.of(rule), FROM, Set.of()));
+    }
+
+    @Test
+    void sameMinutePriorityIsStopThenRestartThenWarnOnly() {
+        LocalDateTime threeAm = LocalDateTime.of(2026, 11, 24, 3, 0);
+        LocalDateTime from = threeAm.minusHours(1);
+        CronRule warn = new CronRule("0 3 * * *", RuleType.WARN_ONLY);
+        CronRule restart = new CronRule("0 3 * * *", RuleType.RESTART);
+        CronRule stop = new CronRule("0 3 * * *", RuleType.STOP);
+
+        assertEquals(RuleType.STOP, CronRule.nextRun(List.of(warn, restart, stop), from, Set.of()).type());
+        assertEquals(RuleType.STOP, CronRule.nextRun(List.of(stop, restart), from, Set.of()).type());
+        assertEquals(RuleType.STOP, CronRule.nextRun(List.of(warn, stop), from, Set.of()).type());
+        assertEquals(RuleType.RESTART, CronRule.nextRun(List.of(warn, restart), from, Set.of()).type());
+        assertEquals(RuleType.WARN_ONLY, CronRule.nextRun(List.of(warn), from, Set.of()).type());
+    }
+
+    @Test
+    void allThreeTypesTogetherFollowTheClock() {
+        // Stop at 02:58 (machine reboots at 03:00, warned too), real restart at 15:00.
+        List<CronRule> rules = List.of(
+                new CronRule("0 15 * * *", RuleType.RESTART),
+                new CronRule("58 2 * * *", RuleType.STOP),
+                new CronRule("0 3 * * *", RuleType.WARN_ONLY));
+        LocalDateTime t = FROM;
+        RuleType[] expected = {RuleType.RESTART, RuleType.STOP, RuleType.WARN_ONLY, RuleType.RESTART};
+        int[] hours = {15, 2, 3, 15};
+        for (int i = 0; i < expected.length; i++) {
+            CronRule.Run run = CronRule.nextRun(rules, t, Set.of());
+            assertEquals(expected[i], run.type(), "run " + i);
+            assertEquals(hours[i], run.time().getHour(), "run " + i);
+            t = run.time();
+        }
     }
 
     @Test

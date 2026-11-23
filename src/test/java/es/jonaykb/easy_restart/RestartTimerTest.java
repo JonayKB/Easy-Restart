@@ -159,7 +159,7 @@ class RestartTimerTest {
 
     @Test
     void warnOnlyRunWarnsAndCountsDownButDoesNotRestart() {
-        timer.scheduleCron(RESTART, true);
+        timer.scheduleCron(RESTART, RuleType.WARN_ONLY);
         assertTrue(timer.isWarnOnly());
         List<Action> actions = run(RESTART.minusMinutes(15), RESTART.plusSeconds(1));
 
@@ -175,9 +175,9 @@ class RestartTimerTest {
 
     @Test
     void sameMinuteCanSwitchFromWarnOnlyToRestart() {
-        timer.scheduleCron(RESTART, true);
+        timer.scheduleCron(RESTART, RuleType.WARN_ONLY);
         assertEquals(warning(10), timer.tick(RESTART.minusMinutes(10), WARNINGS));
-        assertTrue(timer.scheduleCron(RESTART, false));
+        assertTrue(timer.scheduleCron(RESTART, RuleType.RESTART));
         assertFalse(timer.isWarnOnly());
         assertTrue(timer.isAnnounced(), "warnings already sent are kept");
         assertEquals(Action.EXECUTE, timer.tick(RESTART, WARNINGS));
@@ -185,19 +185,60 @@ class RestartTimerTest {
 
     @Test
     void manualRestartReplacesWarnOnlyRun() {
-        timer.scheduleCron(RESTART, true);
+        timer.scheduleCron(RESTART, RuleType.WARN_ONLY);
         LocalDateTime now = RESTART.minusMinutes(30);
         timer.startManual(now, WARNINGS);
         assertFalse(timer.isWarnOnly());
-        assertFalse(timer.scheduleCron(RESTART, true));
+        assertFalse(timer.scheduleCron(RESTART, RuleType.WARN_ONLY));
         assertEquals(Action.EXECUTE, timer.tick(now.plusSeconds(11), WARNINGS));
     }
 
     @Test
     void cancelClearsWarnOnly() {
-        timer.scheduleCron(RESTART, true);
+        timer.scheduleCron(RESTART, RuleType.WARN_ONLY);
         timer.cancel();
         assertFalse(timer.isWarnOnly());
+        assertEquals(Kind.NONE, timer.tick(RESTART.plusSeconds(1), WARNINGS).kind());
+    }
+
+    @Test
+    void stopRunWarnsAndCountsDownThenStops() {
+        timer.scheduleCron(RESTART, RuleType.STOP);
+        assertEquals(RuleType.STOP, timer.getType());
+        List<Action> actions = run(RESTART.minusMinutes(15), RESTART.plusSeconds(1));
+
+        List<Action> expected = new ArrayList<>(List.of(warning(10), warning(5), warning(1)));
+        for (int s = 10; s >= 1; s--) {
+            expected.add(countdown(s));
+        }
+        expected.add(new Action(Kind.STOP, 0));
+        assertEquals(expected, actions);
+        assertNull(timer.getRestartTime());
+        assertEquals(RuleType.RESTART, timer.getType(), "type resets after the run");
+    }
+
+    @Test
+    void sameMinuteCanSwitchToStop() {
+        timer.scheduleCron(RESTART, RuleType.RESTART);
+        assertTrue(timer.scheduleCron(RESTART, RuleType.STOP));
+        assertFalse(timer.scheduleCron(RESTART, RuleType.STOP));
+        assertEquals(new Action(Kind.STOP, 0), timer.tick(RESTART, WARNINGS));
+    }
+
+    @Test
+    void manualRestartReplacesStopRun() {
+        timer.scheduleCron(RESTART, RuleType.STOP);
+        LocalDateTime now = RESTART.minusMinutes(30);
+        timer.startManual(now, WARNINGS);
+        assertEquals(RuleType.RESTART, timer.getType());
+        assertEquals(Action.EXECUTE, timer.tick(now.plusSeconds(11), WARNINGS));
+    }
+
+    @Test
+    void cancelClearsStop() {
+        timer.scheduleCron(RESTART, RuleType.STOP);
+        timer.cancel();
+        assertEquals(RuleType.RESTART, timer.getType());
         assertEquals(Kind.NONE, timer.tick(RESTART.plusSeconds(1), WARNINGS).kind());
     }
 

@@ -9,6 +9,7 @@ import es.jonaykb.easy_restart.CronRule;
 import es.jonaykb.easy_restart.CronScheduler;
 import es.jonaykb.easy_restart.EasyRestart;
 import es.jonaykb.easy_restart.RestartManager;
+import es.jonaykb.easy_restart.RuleType;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
@@ -27,10 +28,13 @@ public class EasyRestartCommand {
                         .requires(cs -> cs.hasPermission(2))
                         .then(Commands.literal("add")
                                 .then(Commands.argument("cron", StringArgumentType.greedyString())
-                                        .executes(ctx -> add(ctx, false))))
+                                        .executes(ctx -> add(ctx, RuleType.RESTART))))
+                        .then(Commands.literal("addstop")
+                                .then(Commands.argument("cron", StringArgumentType.greedyString())
+                                        .executes(ctx -> add(ctx, RuleType.STOP))))
                         .then(Commands.literal("addwarn")
                                 .then(Commands.argument("cron", StringArgumentType.greedyString())
-                                        .executes(ctx -> add(ctx, true))))
+                                        .executes(ctx -> add(ctx, RuleType.WARN_ONLY))))
                         .then(Commands.literal("remove")
                                 .then(Commands.argument("id", IntegerArgumentType.integer(0))
                                         .executes(EasyRestartCommand::remove)))
@@ -46,14 +50,14 @@ public class EasyRestartCommand {
                                 .executes(EasyRestartCommand::help)));
     }
 
-    private static int add(CommandContext<CommandSourceStack> ctx, boolean warnOnly) {
+    private static int add(CommandContext<CommandSourceStack> ctx, RuleType type) {
         CronScheduler scheduler = EasyRestart.CRON_SCHEDULER;
         if (scheduler == null) {
             return notReady(ctx);
         }
         String cron = StringArgumentType.getString(ctx, "cron");
         try {
-            CronRule rule = scheduler.addRule(cron, warnOnly);
+            CronRule rule = scheduler.addRule(cron, type);
             ctx.getSource().sendSuccess(() -> Component.literal("§aAdded " + type(rule) + " rule: §f" + rule.getRaw()), true);
             sendNext(ctx);
             return 1;
@@ -91,7 +95,7 @@ public class EasyRestartCommand {
             ctx.getSource().sendSuccess(() -> Component.literal("Cron rules:"), false);
             for (int i = 0; i < rules.size(); i++) {
                 CronRule rule = rules.get(i);
-                String line = i + ": " + rule.getRaw() + (rule.isWarnOnly() ? " §e[warning only]" : " §c[restart]");
+                String line = i + ": " + rule.getRaw() + " " + rule.getType().tag();
                 ctx.getSource().sendSuccess(() -> Component.literal(line), false);
             }
         }
@@ -141,6 +145,7 @@ public class EasyRestartCommand {
         ctx.getSource().sendSuccess(() -> Component.literal(
                 "EasyRestart Commands:\n" +
                         "/easyrestart add <cron> - Add a restart rule (no quotes needed)\n" +
+                        "/easyrestart addstop <cron> - Add a rule that stops the server without relaunching it\n" +
                         "/easyrestart addwarn <cron> - Add a rule that only warns, without restarting\n" +
                         "/easyrestart remove <id> - Remove a cron rule by ID\n" +
                         "/easyrestart list - List all cron rules and the next restart\n" +
@@ -156,12 +161,16 @@ public class EasyRestartCommand {
         RestartManager manager = EasyRestart.RESTART_MANAGER;
         LocalDateTime next = manager == null ? null : manager.getRestartTime();
         String text = next == null ? "Next restart: none"
-                : "Next restart: " + next.format(TIME_FORMAT) + (manager.isWarnOnly() ? " (warning only, no restart)" : "");
+                : "Next restart: " + next.format(TIME_FORMAT) + switch (manager.getType()) {
+                    case RESTART -> "";
+                    case STOP -> " (stop, no relaunch)";
+                    case WARN_ONLY -> " (warning only, no restart)";
+                };
         ctx.getSource().sendSuccess(() -> Component.literal(text), false);
     }
 
     private static String type(CronRule rule) {
-        return rule.isWarnOnly() ? "warning-only" : "restart";
+        return rule.getType().label();
     }
 
     private static int notReady(CommandContext<CommandSourceStack> ctx) {

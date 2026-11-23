@@ -5,8 +5,10 @@ import net.minecraft.server.MinecraftServer;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import static es.jonaykb.easy_restart.EasyRestart.LOGGER;
 
@@ -29,19 +31,19 @@ public class CronScheduler {
     /** Reloads the rules from the config. Invalid rules are skipped and logged. */
     public void loadRules() {
         rules.clear();
-        loadRules(ModConfig.SERVER.cronRules.get(), false);
-        loadRules(ModConfig.SERVER.warnOnlyRules.get(), true);
+        loadRules(ModConfig.SERVER.cronRules.get(), RuleType.RESTART);
+        loadRules(ModConfig.SERVER.stopRules.get(), RuleType.STOP);
+        loadRules(ModConfig.SERVER.warnOnlyRules.get(), RuleType.WARN_ONLY);
         scheduleNextRestart();
     }
 
-    private void loadRules(List<? extends String> raws, boolean warnOnly) {
-        String type = warnOnly ? "warn-only" : "restart";
+    private void loadRules(List<? extends String> raws, RuleType type) {
         for (String raw : raws) {
             try {
-                rules.add(new CronRule(raw, warnOnly));
-                LOGGER.info("EasyRestart: Cron rule loaded ({}): {}", type, raw);
+                rules.add(new CronRule(raw, type));
+                LOGGER.info("EasyRestart: Cron rule loaded ({}): {}", type.label(), raw);
             } catch (IllegalArgumentException e) {
-                LOGGER.error("EasyRestart: Skipping invalid {} cron rule '{}': {}", type, raw, e.getMessage());
+                LOGGER.error("EasyRestart: Skipping invalid {} cron rule '{}': {}", type.label(), raw, e.getMessage());
             }
         }
     }
@@ -57,7 +59,7 @@ public class CronScheduler {
             restartManager.cancelScheduledRestart();
             LOGGER.info("EasyRestart: No restart scheduled.");
         } else {
-            restartManager.beginScheduledRestart(server, next.time(), next.warnOnly());
+            restartManager.beginScheduledRestart(server, next.time(), next.type());
         }
     }
 
@@ -84,13 +86,16 @@ public class CronScheduler {
     }
 
     private void saveRules() {
-        List<String> restartRules = new ArrayList<>();
-        List<String> warnRules = new ArrayList<>();
-        for (CronRule rule : rules) {
-            (rule.isWarnOnly() ? warnRules : restartRules).add(rule.getRaw());
+        Map<RuleType, List<String>> byType = new EnumMap<>(RuleType.class);
+        for (RuleType type : RuleType.values()) {
+            byType.put(type, new ArrayList<>());
         }
-        ModConfig.SERVER.cronRules.set(restartRules);
-        ModConfig.SERVER.warnOnlyRules.set(warnRules);
+        for (CronRule rule : rules) {
+            byType.get(rule.getType()).add(rule.getRaw());
+        }
+        ModConfig.SERVER.cronRules.set(byType.get(RuleType.RESTART));
+        ModConfig.SERVER.stopRules.set(byType.get(RuleType.STOP));
+        ModConfig.SERVER.warnOnlyRules.set(byType.get(RuleType.WARN_ONLY));
         ModConfig.SERVER_SPEC.save();
     }
 
@@ -100,27 +105,23 @@ public class CronScheduler {
      * @throws IllegalArgumentException if the rule is invalid; nothing is saved.
      */
     public CronRule addRule(String raw) {
-        return addRule(raw, false);
+        return addRule(raw, RuleType.RESTART);
     }
 
     /**
-     * Adds and saves a rule, restart or warn-only.
+     * Adds and saves a rule of the given type.
      *
      * @throws IllegalArgumentException if the rule is invalid; nothing is saved.
      */
-    public CronRule addRule(String raw, boolean warnOnly) {
-        CronRule rule = new CronRule(raw, warnOnly);
-        // Keep restart rules first so IDs match the order of the config file.
-        if (warnOnly) {
-            rules.add(rule);
-        } else {
-            int firstWarn = 0;
-            while (firstWarn < rules.size() && !rules.get(firstWarn).isWarnOnly()) {
-                firstWarn++;
-            }
-            rules.add(firstWarn, rule);
+    public CronRule addRule(String raw, RuleType type) {
+        CronRule rule = new CronRule(raw, type);
+        // Keep rules grouped by type (restart, stop, warn-only) so IDs match the config file order.
+        int index = 0;
+        while (index < rules.size() && rules.get(index).getType().ordinal() <= type.ordinal()) {
+            index++;
         }
-        LOGGER.info("EasyRestart: Cron rule added ({}): {}", warnOnly ? "warn-only" : "restart", rule.getRaw());
+        rules.add(index, rule);
+        LOGGER.info("EasyRestart: Cron rule added ({}): {}", type.label(), rule.getRaw());
         saveRules();
         scheduleNextRestart();
         return rule;

@@ -17,23 +17,24 @@ public class RestartTimer {
     public static final int COUNTDOWN_SECONDS = 10;
 
     /**
-     * EXECUTE: restart now. WARN_ONLY_DONE: a warn-only run reached its time; nothing
-     * to restart, just schedule the next run.
+     * EXECUTE: stop and relaunch now. STOP: stop now without relaunching.
+     * WARN_ONLY_DONE: a warn-only run reached its time; just schedule the next run.
      */
-    public enum Kind { NONE, WARNING, COUNTDOWN, EXECUTE, WARN_ONLY_DONE }
+    public enum Kind { NONE, WARNING, COUNTDOWN, EXECUTE, STOP, WARN_ONLY_DONE }
 
     /** What the caller must do on this tick. {@code value} is minutes for WARNING, seconds for COUNTDOWN. */
     public record Action(Kind kind, long value) {
         static final Action NONE = new Action(Kind.NONE, 0);
         static final Action EXECUTE = new Action(Kind.EXECUTE, 0);
+        static final Action STOP = new Action(Kind.STOP, 0);
         static final Action WARN_ONLY_DONE = new Action(Kind.WARN_ONLY_DONE, 0);
     }
 
     private LocalDateTime restartTime = null;
     /** True when the pending restart came from /easyrestart now, so cron changes don't replace it. */
     private boolean manual = false;
-    /** True when the pending run only warns players and must not restart the server. */
-    private boolean warnOnly = false;
+    /** What the pending run does: restart, stop, or only warn. */
+    private RuleType type = RuleType.RESTART;
     private final Set<Integer> warned = new HashSet<>();
     private long lastCountdownSecond = -1;
     /** True once players have been told about the pending restart. */
@@ -41,25 +42,25 @@ public class RestartTimer {
 
     /** Sets the next cron restart. Ignored while a manual restart is pending. Returns true if it changed. */
     public boolean scheduleCron(LocalDateTime time) {
-        return scheduleCron(time, false);
+        return scheduleCron(time, RuleType.RESTART);
     }
 
     /**
-     * Sets the next cron run, a real restart or a warn-only one. Ignored while a
-     * manual restart is pending. Returns true if it changed.
+     * Sets the next cron run (restart, stop or warn-only). Ignored while a manual
+     * restart is pending. Returns true if it changed.
      */
-    public boolean scheduleCron(LocalDateTime time, boolean warnOnly) {
+    public boolean scheduleCron(LocalDateTime time, RuleType type) {
         if (manual) {
             return false;
         }
         if (time.equals(restartTime)) {
             // Same minute: only the type may change (e.g. a restart rule was added on a warn-only minute).
-            boolean changed = this.warnOnly != warnOnly;
-            this.warnOnly = warnOnly;
+            boolean changed = this.type != type;
+            this.type = type;
             return changed;
         }
         restartTime = time;
-        this.warnOnly = warnOnly;
+        this.type = type;
         reset();
         return true;
     }
@@ -68,7 +69,7 @@ public class RestartTimer {
     public void startManual(LocalDateTime now, Collection<? extends Integer> warningMinutes) {
         restartTime = now.plusSeconds(COUNTDOWN_SECONDS);
         manual = true;
-        warnOnly = false;
+        type = RuleType.RESTART;
         reset();
         warned.addAll(warningMinutes);
         announced = true;
@@ -78,7 +79,7 @@ public class RestartTimer {
     public void clearCron() {
         if (!manual) {
             restartTime = null;
-            warnOnly = false;
+            type = RuleType.RESTART;
             reset();
         }
     }
@@ -87,7 +88,7 @@ public class RestartTimer {
     public void cancel() {
         restartTime = null;
         manual = false;
-        warnOnly = false;
+        type = RuleType.RESTART;
         reset();
     }
 
@@ -104,11 +105,15 @@ public class RestartTimer {
 
         long millisLeft = Duration.between(now, restartTime).toMillis();
         if (millisLeft <= 0) {
-            boolean onlyWarn = warnOnly;
+            RuleType done = type;
             restartTime = null;
             manual = false;
-            warnOnly = false;
-            return onlyWarn ? Action.WARN_ONLY_DONE : Action.EXECUTE;
+            type = RuleType.RESTART;
+            return switch (done) {
+                case RESTART -> Action.EXECUTE;
+                case STOP -> Action.STOP;
+                case WARN_ONLY -> Action.WARN_ONLY_DONE;
+            };
         }
         long secondsLeft = (millisLeft + 999) / 1000;
 
@@ -140,8 +145,12 @@ public class RestartTimer {
         return restartTime;
     }
 
+    public RuleType getType() {
+        return type;
+    }
+
     public boolean isWarnOnly() {
-        return warnOnly;
+        return type == RuleType.WARN_ONLY;
     }
 
     public boolean isManual() {
