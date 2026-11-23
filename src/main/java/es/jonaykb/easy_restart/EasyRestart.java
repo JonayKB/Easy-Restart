@@ -47,7 +47,7 @@ public class EasyRestart {
     @SubscribeEvent
     public void onServerStopped(ServerStoppedEvent event) {
         if (RESTART_MANAGER != null) {
-            RESTART_MANAGER.onServerStopped();
+            RESTART_MANAGER.onServerStopped(event.getServer());
         }
         RESTART_MANAGER = null;
         CRON_SCHEDULER = null;

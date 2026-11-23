@@ -34,6 +34,7 @@ public class ModConfig {
                 public final ForgeConfigSpec.ConfigValue<String> msgStopNow;
 
                 public final ForgeConfigSpec.ConfigValue<String> restartScriptPath;
+                public final ForgeConfigSpec.IntValue restartExitCode;
 
                 ServerConfig(ForgeConfigSpec.Builder builder) {
                         builder.comment("Config of Auto-Restart Mod").push("general");
@@ -60,6 +61,16 @@ public class ModConfig {
                                                         "On Windows use double backslashes or forward slashes (e.g. scripts/start.bat).",
                                                         "The script is launched detached from the JVM so it survives the server process ending.")
                                         .define("restartScriptPath", "");
+
+                        restartExitCode = builder
+                                        .comment(
+                                                        "Exit code the server process ends with after a restart rule or /easyrestart now.",
+                                                        "For panels that relaunch the server themselves (Crafty, Pterodactyl, AMP...):",
+                                                        "leave restartScriptPath empty, set this to e.g. 1 and turn on the panel's crash",
+                                                        "detection / auto-restart. Stop rules always end with 0, so if 0 is an ignored",
+                                                        "exit code in the panel, stops stay stopped while restarts come back up.",
+                                                        "0 = normal exit (default).")
+                                        .defineInRange("restartExitCode", 0, 0, 255);
 
                         builder.pop();
 
