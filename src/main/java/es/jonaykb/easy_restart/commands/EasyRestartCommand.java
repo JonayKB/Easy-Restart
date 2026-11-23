@@ -27,7 +27,10 @@ public class EasyRestartCommand {
                         .requires(cs -> cs.hasPermission(2))
                         .then(Commands.literal("add")
                                 .then(Commands.argument("cron", StringArgumentType.greedyString())
-                                        .executes(EasyRestartCommand::add)))
+                                        .executes(ctx -> add(ctx, false))))
+                        .then(Commands.literal("addwarn")
+                                .then(Commands.argument("cron", StringArgumentType.greedyString())
+                                        .executes(ctx -> add(ctx, true))))
                         .then(Commands.literal("remove")
                                 .then(Commands.argument("id", IntegerArgumentType.integer(0))
                                         .executes(EasyRestartCommand::remove)))
@@ -43,15 +46,15 @@ public class EasyRestartCommand {
                                 .executes(EasyRestartCommand::help)));
     }
 
-    private static int add(CommandContext<CommandSourceStack> ctx) {
+    private static int add(CommandContext<CommandSourceStack> ctx, boolean warnOnly) {
         CronScheduler scheduler = EasyRestart.CRON_SCHEDULER;
         if (scheduler == null) {
             return notReady(ctx);
         }
         String cron = StringArgumentType.getString(ctx, "cron");
         try {
-            CronRule rule = scheduler.addRule(cron);
-            ctx.getSource().sendSuccess(() -> Component.literal("§aAdded rule: §f" + rule.getRaw()), true);
+            CronRule rule = scheduler.addRule(cron, warnOnly);
+            ctx.getSource().sendSuccess(() -> Component.literal("§aAdded " + type(rule) + " rule: §f" + rule.getRaw()), true);
             sendNext(ctx);
             return 1;
         } catch (IllegalArgumentException e) {
@@ -71,7 +74,7 @@ public class EasyRestartCommand {
             ctx.getSource().sendFailure(Component.literal("No rule with ID " + id + ". Use /easyrestart list."));
             return 0;
         }
-        ctx.getSource().sendSuccess(() -> Component.literal("§aRemoved rule: §f" + removed.getRaw()), true);
+        ctx.getSource().sendSuccess(() -> Component.literal("§aRemoved " + type(removed) + " rule: §f" + removed.getRaw()), true);
         sendNext(ctx);
         return 1;
     }
@@ -87,7 +90,8 @@ public class EasyRestartCommand {
         } else {
             ctx.getSource().sendSuccess(() -> Component.literal("Cron rules:"), false);
             for (int i = 0; i < rules.size(); i++) {
-                String line = i + ": " + rules.get(i).getRaw();
+                CronRule rule = rules.get(i);
+                String line = i + ": " + rule.getRaw() + (rule.isWarnOnly() ? " §e[warning only]" : " §c[restart]");
                 ctx.getSource().sendSuccess(() -> Component.literal(line), false);
             }
         }
@@ -136,7 +140,8 @@ public class EasyRestartCommand {
     private static int help(CommandContext<CommandSourceStack> ctx) {
         ctx.getSource().sendSuccess(() -> Component.literal(
                 "EasyRestart Commands:\n" +
-                        "/easyrestart add <cron> - Add a cron rule (no quotes needed)\n" +
+                        "/easyrestart add <cron> - Add a restart rule (no quotes needed)\n" +
+                        "/easyrestart addwarn <cron> - Add a rule that only warns, without restarting\n" +
                         "/easyrestart remove <id> - Remove a cron rule by ID\n" +
                         "/easyrestart list - List all cron rules and the next restart\n" +
                         "/easyrestart reload - Reload cron rules from config\n" +
@@ -150,8 +155,13 @@ public class EasyRestartCommand {
     private static void sendNext(CommandContext<CommandSourceStack> ctx) {
         RestartManager manager = EasyRestart.RESTART_MANAGER;
         LocalDateTime next = manager == null ? null : manager.getRestartTime();
-        String text = next == null ? "Next restart: none" : "Next restart: " + next.format(TIME_FORMAT);
+        String text = next == null ? "Next restart: none"
+                : "Next restart: " + next.format(TIME_FORMAT) + (manager.isWarnOnly() ? " (warning only, no restart)" : "");
         ctx.getSource().sendSuccess(() -> Component.literal(text), false);
+    }
+
+    private static String type(CronRule rule) {
+        return rule.isWarnOnly() ? "warning-only" : "restart";
     }
 
     private static int notReady(CommandContext<CommandSourceStack> ctx) {

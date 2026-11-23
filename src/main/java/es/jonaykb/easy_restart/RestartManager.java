@@ -26,11 +26,26 @@ public class RestartManager {
     private final RestartTimer timer = new RestartTimer();
     private boolean stopping = false;
     private final AtomicBoolean scriptPending = new AtomicBoolean(false);
+    /** Warn-only run whose world save has already been done. */
+    private LocalDateTime savedForWarnOnly = null;
+    /** Called when a warn-only run has passed, to schedule the next one. */
+    private Runnable onWarnOnlyDone = () -> {
+    };
+
+    public void setOnWarnOnlyDone(Runnable onWarnOnlyDone) {
+        this.onWarnOnlyDone = onWarnOnlyDone;
+    }
 
     /** Schedules a cron restart. Ignored while a manual restart is pending. */
     public void beginScheduledRestart(MinecraftServer server, LocalDateTime scheduledTime) {
-        if (!stopping && timer.scheduleCron(scheduledTime)) {
-            LOGGER.info("EasyRestart: Next restart scheduled at {}", scheduledTime);
+        beginScheduledRestart(server, scheduledTime, false);
+    }
+
+    /** Schedules a cron run, real or warn-only. Ignored while a manual restart is pending. */
+    public void beginScheduledRestart(MinecraftServer server, LocalDateTime scheduledTime, boolean warnOnly) {
+        if (!stopping && timer.scheduleCron(scheduledTime, warnOnly)) {
+            LOGGER.info("EasyRestart: Next {} scheduled at {}", warnOnly ? "restart warning (no restart)" : "restart",
+                    scheduledTime);
         }
     }
 
@@ -81,6 +96,13 @@ public class RestartManager {
                 LOGGER.info("EasyRestart: Server restart in {} minute(s).", action.value());
             }
             case COUNTDOWN -> {
+                if (timer.isWarnOnly() && !timer.getRestartTime().equals(savedForWarnOnly)) {
+                    // Something else (e.g. the machine) is about to take the server down:
+                    // flush the world to disk while there is still time.
+                    savedForWarnOnly = timer.getRestartTime();
+                    LOGGER.info("EasyRestart: Warn-only run in {}s, saving the world.", action.value());
+                    server.saveEverything(false, true, true);
+                }
                 broadcast(server, ModConfig.SERVER.msgFinalCountdown.get()
                         .replace("{seconds}", String.valueOf(action.value())));
                 showTitle(server, "§c" + action.value());
@@ -88,6 +110,11 @@ public class RestartManager {
                 LOGGER.info("EasyRestart: Server restart in {} seconds.", action.value());
             }
             case EXECUTE -> executeRestart(server);
+            case WARN_ONLY_DONE -> {
+                broadcast(server, ModConfig.SERVER.msgRestartNow.get());
+                LOGGER.info("EasyRestart: Warn-only run reached; the server keeps running.");
+                onWarnOnlyDone.run();
+            }
             case NONE -> {
             }
         }
@@ -219,6 +246,10 @@ public class RestartManager {
 
     public boolean isRestartScheduled() {
         return timer.getRestartTime() != null;
+    }
+
+    public boolean isWarnOnly() {
+        return timer.isWarnOnly();
     }
 
     public boolean isManualRestart() {

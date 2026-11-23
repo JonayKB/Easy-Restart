@@ -22,6 +22,7 @@ public class ModConfig {
                 public final ForgeConfigSpec.BooleanValue enableTitles;
                 public final ForgeConfigSpec.ConfigValue<List<? extends Integer>> preWarningMinutes;
                 public final ForgeConfigSpec.ConfigValue<List<? extends String>> cronRules;
+                public final ForgeConfigSpec.ConfigValue<List<? extends String>> warnOnlyRules;
                 public final ForgeConfigSpec.ConfigValue<String> msgPreWarning;
                 public final ForgeConfigSpec.ConfigValue<String> msgFinalCountdown;
                 public final ForgeConfigSpec.ConfigValue<String> msgRestartNow;
@@ -64,6 +65,16 @@ public class ModConfig {
                                         .comment("List of cron rules. Example: \"0 3 * * *\" for daily restart at 3:00.")
                                         .defineList("rules",
                                                         Arrays.asList("0 3 * * *"),
+                                                        obj -> obj instanceof String);
+
+                        warnOnlyRules = builder
+                                        .comment("Cron rules that only warn players, with the same warnings and countdown,",
+                                                        "but never restart the server. Use them when something else restarts it,",
+                                                        "e.g. the machine reboots itself at 3:00 -> \"0 3 * * *\".",
+                                                        "The world is saved when the final countdown starts.",
+                                                        "If a restart rule and a warn-only rule match the same minute, the restart wins.")
+                                        .defineList("warnOnlyRules",
+                                                        Arrays.asList(),
                                                         obj -> obj instanceof String);
 
                         builder.pop();

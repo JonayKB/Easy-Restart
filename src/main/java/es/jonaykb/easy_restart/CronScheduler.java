@@ -22,35 +22,42 @@ public class CronScheduler {
     public CronScheduler(RestartManager restartManager, MinecraftServer server) {
         this.restartManager = restartManager;
         this.server = server;
+        restartManager.setOnWarnOnlyDone(this::scheduleNextRestart);
         loadRules();
     }
 
     /** Reloads the rules from the config. Invalid rules are skipped and logged. */
     public void loadRules() {
         rules.clear();
-        for (String raw : ModConfig.SERVER.cronRules.get()) {
+        loadRules(ModConfig.SERVER.cronRules.get(), false);
+        loadRules(ModConfig.SERVER.warnOnlyRules.get(), true);
+        scheduleNextRestart();
+    }
+
+    private void loadRules(List<? extends String> raws, boolean warnOnly) {
+        String type = warnOnly ? "warn-only" : "restart";
+        for (String raw : raws) {
             try {
-                rules.add(new CronRule(raw));
-                LOGGER.info("EasyRestart: Cron rule loaded: {}", raw);
+                rules.add(new CronRule(raw, warnOnly));
+                LOGGER.info("EasyRestart: Cron rule loaded ({}): {}", type, raw);
             } catch (IllegalArgumentException e) {
-                LOGGER.error("EasyRestart: Skipping invalid cron rule '{}': {}", raw, e.getMessage());
+                LOGGER.error("EasyRestart: Skipping invalid {} cron rule '{}': {}", type, raw, e.getMessage());
             }
         }
-        scheduleNextRestart();
     }
 
     /** Schedules the earliest upcoming run among all rules, or cancels it if there is none. */
     public void scheduleNextRestart() {
         LocalDateTime now = LocalDateTime.now();
         skippedRestarts.removeIf(t -> !t.isAfter(now));
-        LocalDateTime earliest = CronRule.earliestNext(rules, now, skippedRestarts);
+        CronRule.Run next = CronRule.nextRun(rules, now, skippedRestarts);
 
-        nextScheduledRestart = earliest;
-        if (earliest == null) {
+        nextScheduledRestart = next == null ? null : next.time();
+        if (next == null) {
             restartManager.cancelScheduledRestart();
             LOGGER.info("EasyRestart: No restart scheduled.");
         } else {
-            restartManager.beginScheduledRestart(server, earliest);
+            restartManager.beginScheduledRestart(server, next.time(), next.warnOnly());
         }
     }
 
@@ -77,12 +84,14 @@ public class CronScheduler {
     }
 
     private void saveRules() {
-        List<String> rawRules = new ArrayList<>();
+        List<String> restartRules = new ArrayList<>();
+        List<String> warnRules = new ArrayList<>();
         for (CronRule rule : rules) {
-            rawRules.add(rule.getRaw());
+            (rule.isWarnOnly() ? warnRules : restartRules).add(rule.getRaw());
         }
-        ModConfig.SERVER.cronRules.set(rawRules);
-        ModConfig.SERVER.cronRules.save();
+        ModConfig.SERVER.cronRules.set(restartRules);
+        ModConfig.SERVER.warnOnlyRules.set(warnRules);
+        ModConfig.SERVER_SPEC.save();
     }
 
     /**
@@ -91,9 +100,27 @@ public class CronScheduler {
      * @throws IllegalArgumentException if the rule is invalid; nothing is saved.
      */
     public CronRule addRule(String raw) {
-        CronRule rule = new CronRule(raw);
-        rules.add(rule);
-        LOGGER.info("EasyRestart: Cron rule added: {}", rule.getRaw());
+        return addRule(raw, false);
+    }
+
+    /**
+     * Adds and saves a rule, restart or warn-only.
+     *
+     * @throws IllegalArgumentException if the rule is invalid; nothing is saved.
+     */
+    public CronRule addRule(String raw, boolean warnOnly) {
+        CronRule rule = new CronRule(raw, warnOnly);
+        // Keep restart rules first so IDs match the order of the config file.
+        if (warnOnly) {
+            rules.add(rule);
+        } else {
+            int firstWarn = 0;
+            while (firstWarn < rules.size() && !rules.get(firstWarn).isWarnOnly()) {
+                firstWarn++;
+            }
+            rules.add(firstWarn, rule);
+        }
+        LOGGER.info("EasyRestart: Cron rule added ({}): {}", warnOnly ? "warn-only" : "restart", rule.getRaw());
         saveRules();
         scheduleNextRestart();
         return rule;
