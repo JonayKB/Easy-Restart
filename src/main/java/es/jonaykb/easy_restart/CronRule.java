@@ -1,31 +1,56 @@
 package es.jonaykb.easy_restart;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.BitSet;
 
+/**
+ * Standard 5-field cron expression: minute hour day-of-month month day-of-week.
+ * Supports '*', '?', lists (a,b), ranges (a-b) and steps (x/n). Day-of-week
+ * accepts 0-7 (0 and 7 are Sunday). As in POSIX cron, when both day-of-month and
+ * day-of-week are restricted, a day matches if either one matches.
+ */
 public class CronRule {
-    private final String raw;
-    private final String minutePart;
-    private final String hourPart;
-    private final String dayOfMonthPart;
-    private final String monthPart;
-    private final String dayOfWeekPart;
 
+    /** How far ahead to look for the next run. 8 years covers any leap day. */
+    private static final int SEARCH_YEARS = 8;
+
+    private final String raw;
+    private final BitSet minutes;
+    private final BitSet hours;
+    private final BitSet daysOfMonth;
+    private final BitSet months;
+    private final BitSet daysOfWeek;
+    private final boolean dayOfMonthAny;
+    private final boolean dayOfWeekAny;
+
+    /**
+     * @throws IllegalArgumentException if the expression is malformed, out of
+     *                                  range, or can never run.
+     */
     public CronRule(String rule) {
-        this.raw = rule;
-        String[] parts = rule.trim().split("\\s+");
-        
+        this.raw = rule.trim();
+        String[] parts = raw.split("\\s+");
         if (parts.length != 5) {
-            throw new IllegalArgumentException("Invalid cron rule. Expected 5 fields, got " + parts.length + ": " + rule);
+            throw new IllegalArgumentException("expected 5 fields, got " + parts.length);
         }
-        
-        this.minutePart = parts[0];
-        this.hourPart = parts[1];
-        this.dayOfMonthPart = parts[2];
-        this.monthPart = parts[3];
-        this.dayOfWeekPart = parts[4];
+
+        minutes = parseField(parts[0], 0, 59, "minute");
+        hours = parseField(parts[1], 0, 23, "hour");
+        daysOfMonth = parseField(parts[2], 1, 31, "day of month");
+        months = parseField(parts[3], 1, 12, "month");
+        daysOfWeek = parseField(parts[4], 0, 7, "day of week");
+        if (daysOfWeek.get(7)) {
+            daysOfWeek.set(0);
+            daysOfWeek.clear(7);
+        }
+        dayOfMonthAny = isWildcard(parts[2]);
+        dayOfWeekAny = isWildcard(parts[4]);
+
+        if (getNextExecutionFrom(LocalDateTime.now()) == null) {
+            throw new IllegalArgumentException("this rule never matches a real date");
+        }
     }
 
     public String getRaw() {
@@ -33,180 +58,112 @@ public class CronRule {
     }
 
     public boolean matches(LocalDateTime time) {
-        return matchesField(minutePart, time.getMinute(), 0, 59) &&
-               matchesField(hourPart, time.getHour(), 0, 23) &&
-               matchesField(dayOfMonthPart, time.getDayOfMonth(), 1, 31) &&
-               matchesField(monthPart, time.getMonthValue(), 1, 12) &&
-               matchesField(dayOfWeekPart, time.getDayOfWeek().getValue() % 7, 0, 6);
+        return minutes.get(time.getMinute())
+                && hours.get(time.getHour())
+                && matchesDate(time.toLocalDate());
     }
 
-    /**
-     * Obtiene la próxima ejecución a partir del tiempo actual
-     */
+    private boolean matchesDate(LocalDate date) {
+        if (!months.get(date.getMonthValue())) {
+            return false;
+        }
+        boolean dom = daysOfMonth.get(date.getDayOfMonth());
+        boolean dow = daysOfWeek.get(date.getDayOfWeek().getValue() % 7);
+        if (dayOfMonthAny || dayOfWeekAny) {
+            return dom && dow;
+        }
+        return dom || dow;
+    }
+
+    /** Next run strictly after now, or null if none in the search window. */
     public LocalDateTime getNextExecution() {
         return getNextExecutionFrom(LocalDateTime.now());
     }
 
-    /**
-     * Obtiene la próxima ejecución a partir de un tiempo específico
-     */
+    /** Next run strictly after {@code fromTime}, or null if none in the search window. */
     public LocalDateTime getNextExecutionFrom(LocalDateTime fromTime) {
-        // Empezar desde el siguiente minuto
-        LocalDateTime current = fromTime.plusMinutes(1).truncatedTo(ChronoUnit.MINUTES);
-        
-        // Buscar hasta 100 años en el futuro (evitar bucle infinito)
-        int maxYears = 10;
-        LocalDateTime limit = current.plusYears(maxYears);
-        
+        LocalDateTime current = fromTime.truncatedTo(ChronoUnit.MINUTES).plusMinutes(1);
+        LocalDateTime limit = current.plusYears(SEARCH_YEARS);
+
         while (current.isBefore(limit)) {
-            if (matches(current)) {
+            if (!matchesDate(current.toLocalDate())) {
+                current = current.toLocalDate().plusDays(1).atStartOfDay();
+            } else if (!hours.get(current.getHour())) {
+                current = current.truncatedTo(ChronoUnit.HOURS).plusHours(1);
+            } else if (!minutes.get(current.getMinute())) {
+                current = current.plusMinutes(1);
+            } else {
                 return current;
             }
-            current = current.plusMinutes(1);
         }
-        
-        throw new RuntimeException("No next execution found within " + maxYears + " years for cron: " + raw);
+        return null;
     }
 
-    // Métodos auxiliares para verificar coincidencias
-    private boolean matchesField(String field, int value, int min, int max) {
-        if (field.equals("*") || field.equals("?")) {
-            return true;
-        }
-        
-        // Dividir por comas
-        String[] parts = field.split(",");
-        for (String part : parts) {
-            if (matchesPart(part, value, min, max)) {
-                return true;
-            }
-        }
-        return false;
+    private static boolean isWildcard(String field) {
+        return field.equals("*") || field.equals("?");
     }
 
-    private boolean matchesPart(String part, int value, int min, int max) {
-        // Manejar pasos (e.g., */5, 0-30/5)
-        if (part.contains("/")) {
-            String[] stepParts = part.split("/");
-            String range = stepParts[0];
-            int step = Integer.parseInt(stepParts[1]);
-            
-            if (step <= 0) return false;
-            
-            // Si es asterisco, usar el rango completo
-            if (range.equals("*")) {
-                range = min + "-" + max;
-            }
-            
-            // Parsear rango
-            String[] rangeParts = range.split("-");
-            int start = min;
-            int end = max;
-            
-            if (rangeParts.length == 2) {
-                start = Integer.parseInt(rangeParts[0]);
-                end = Integer.parseInt(rangeParts[1]);
-            } else if (!range.equals(min + "-" + max)) {
-                start = Integer.parseInt(range);
-                end = max;
-            }
-            
-            // Verificar si el valor está en el rango y cumple el paso
-            if (value < start || value > end) {
-                return false;
-            }
-            
-            return (value - start) % step == 0;
-        }
-        
-        // Manejar rangos (e.g., 1-5)
-        if (part.contains("-")) {
-            String[] rangeParts = part.split("-");
-            int start = Integer.parseInt(rangeParts[0]);
-            int end = Integer.parseInt(rangeParts[1]);
-            return value >= start && value <= end;
-        }
-        
-        // Valor individual
-        try {
-            return Integer.parseInt(part) == value;
-        } catch (NumberFormatException e) {
-            return false;
-        }
-    }
-
-    // Método para obtener todos los valores válidos de un campo (útil para debugging)
-    public Set<Integer> getValidValues(String field, int min, int max) {
-        Set<Integer> values = new HashSet<>();
-        
-        if (field.equals("*") || field.equals("?")) {
-            for (int i = min; i <= max; i++) {
-                values.add(i);
-            }
-            return values;
-        }
-        
-        String[] parts = field.split(",");
-        for (String part : parts) {
-            if (part.contains("/")) {
-                String[] stepParts = part.split("/");
-                String range = stepParts[0];
-                int step = Integer.parseInt(stepParts[1]);
-                
-                if (range.equals("*")) {
-                    range = min + "-" + max;
-                }
-                
-                String[] rangeParts = range.split("-");
-                int start = min;
-                int end = max;
-                
-                if (rangeParts.length == 2) {
-                    start = Integer.parseInt(rangeParts[0]);
-                    end = Integer.parseInt(rangeParts[1]);
-                } else if (!range.equals(min + "-" + max)) {
-                    start = Integer.parseInt(range);
-                    end = max;
-                }
-                
-                for (int i = start; i <= end; i += step) {
-                    if (i >= min && i <= max) {
-                        values.add(i);
-                    }
-                }
-            } else if (part.contains("-")) {
-                String[] rangeParts = part.split("-");
-                int start = Integer.parseInt(rangeParts[0]);
-                int end = Integer.parseInt(rangeParts[1]);
-                for (int i = start; i <= end; i++) {
-                    if (i >= min && i <= max) {
-                        values.add(i);
-                    }
-                }
-            } else {
-                try {
-                    int val = Integer.parseInt(part);
-                    if (val >= min && val <= max) {
-                        values.add(val);
-                    }
-                } catch (NumberFormatException e) {
-                    // Ignorar valores inválidos
-                }
+    private static BitSet parseField(String field, int min, int max, String name) {
+        BitSet values = new BitSet(max + 1);
+        for (String part : field.split(",", -1)) {
+            try {
+                parsePart(part, min, max, values);
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("invalid " + name + " value '" + part + "'");
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("invalid " + name + " '" + part + "': " + e.getMessage());
             }
         }
-        
         return values;
+    }
+
+    private static void parsePart(String part, int min, int max, BitSet values) {
+        if (part.isEmpty()) {
+            throw new IllegalArgumentException("empty value");
+        }
+
+        String range = part;
+        int step = 1;
+        int slash = part.indexOf('/');
+        if (slash >= 0) {
+            range = part.substring(0, slash);
+            step = Integer.parseInt(part.substring(slash + 1));
+            if (step <= 0) {
+                throw new IllegalArgumentException("step must be greater than 0");
+            }
+        }
+
+        int start;
+        int end;
+        if (isWildcard(range)) {
+            start = min;
+            end = max;
+        } else if (range.contains("-")) {
+            String[] bounds = range.split("-", -1);
+            if (bounds.length != 2) {
+                throw new IllegalArgumentException("bad range");
+            }
+            start = Integer.parseInt(bounds[0]);
+            end = Integer.parseInt(bounds[1]);
+        } else {
+            start = Integer.parseInt(range);
+            // "5/15" means "from 5 to the end, every 15"
+            end = slash >= 0 ? max : start;
+        }
+
+        if (start < min || end > max) {
+            throw new IllegalArgumentException("must be between " + min + " and " + max);
+        }
+        if (start > end) {
+            throw new IllegalArgumentException("range start is after its end");
+        }
+        for (int i = start; i <= end; i += step) {
+            values.set(i);
+        }
     }
 
     @Override
     public String toString() {
-        return "CronRule{" +
-               "raw='" + raw + '\'' +
-               ", minutes=" + getValidValues(minutePart, 0, 59) +
-               ", hours=" + getValidValues(hourPart, 0, 23) +
-               ", daysOfMonth=" + getValidValues(dayOfMonthPart, 1, 31) +
-               ", months=" + getValidValues(monthPart, 1, 12) +
-               ", daysOfWeek=" + getValidValues(dayOfWeekPart, 0, 6) +
-               '}';
+        return "CronRule{" + raw + '}';
     }
 }
