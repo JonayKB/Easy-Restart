@@ -163,6 +163,46 @@ class CronRuleTest {
     }
 
     @Test
+    void nextRunKeepsTheRuleType() {
+        List<CronRule> rules = List.of(new CronRule("0 3 * * *", true), new CronRule("0 15 * * *", false));
+        assertEquals(new CronRule.Run(LocalDateTime.of(2026, 11, 23, 15, 0), false),
+                CronRule.nextRun(rules, FROM, Set.of()));
+        assertEquals(new CronRule.Run(LocalDateTime.of(2026, 11, 24, 3, 0), true),
+                CronRule.nextRun(rules, LocalDateTime.of(2026, 11, 23, 15, 0), Set.of()));
+    }
+
+    @Test
+    void restartWinsOverWarnOnlyOnTheSameMinute() {
+        LocalDateTime threeAm = LocalDateTime.of(2026, 11, 24, 3, 0);
+        List<CronRule> rules = List.of(new CronRule("0 3 * * *", true), new CronRule("0 */3 * * *", false));
+        assertEquals(new CronRule.Run(LocalDateTime.of(2026, 11, 23, 15, 0), false),
+                CronRule.nextRun(rules, FROM, Set.of()));
+        assertEquals(new CronRule.Run(threeAm, false),
+                CronRule.nextRun(rules, LocalDateTime.of(2026, 11, 24, 2, 0), Set.of()));
+    }
+
+    @Test
+    void onlyWarnRulesGiveWarnOnlyRuns() {
+        List<CronRule> rules = List.of(new CronRule("0 3 * * *", true));
+        CronRule.Run run = CronRule.nextRun(rules, FROM, Set.of());
+        assertTrue(run.warnOnly());
+        assertEquals(LocalDateTime.of(2026, 11, 24, 3, 0), run.time());
+        assertFalse(new CronRule("0 3 * * *").isWarnOnly());
+    }
+
+    @Test
+    void cancellingWarnOnlyRunSkipsIt() {
+        List<CronRule> rules = List.of(new CronRule("0 3 * * *", true));
+        LocalDateTime tomorrow = LocalDateTime.of(2026, 11, 24, 3, 0);
+        assertEquals(new CronRule.Run(tomorrow.plusDays(1), true), CronRule.nextRun(rules, FROM, Set.of(tomorrow)));
+    }
+
+    @Test
+    void nextRunWithNoRulesIsNull() {
+        assertNull(CronRule.nextRun(List.of(), FROM, Set.of()));
+    }
+
+    @Test
     void earliestNextWithNoRulesIsNull() {
         assertNull(CronRule.earliestNext(List.of(), FROM));
     }

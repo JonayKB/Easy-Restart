@@ -158,6 +158,50 @@ class RestartTimerTest {
     }
 
     @Test
+    void warnOnlyRunWarnsAndCountsDownButDoesNotRestart() {
+        timer.scheduleCron(RESTART, true);
+        assertTrue(timer.isWarnOnly());
+        List<Action> actions = run(RESTART.minusMinutes(15), RESTART.plusSeconds(1));
+
+        List<Action> expected = new ArrayList<>(List.of(warning(10), warning(5), warning(1)));
+        for (int s = 10; s >= 1; s--) {
+            expected.add(countdown(s));
+        }
+        expected.add(new Action(Kind.WARN_ONLY_DONE, 0));
+        assertEquals(expected, actions);
+        assertNull(timer.getRestartTime());
+        assertFalse(timer.isWarnOnly());
+    }
+
+    @Test
+    void sameMinuteCanSwitchFromWarnOnlyToRestart() {
+        timer.scheduleCron(RESTART, true);
+        assertEquals(warning(10), timer.tick(RESTART.minusMinutes(10), WARNINGS));
+        assertTrue(timer.scheduleCron(RESTART, false));
+        assertFalse(timer.isWarnOnly());
+        assertTrue(timer.isAnnounced(), "warnings already sent are kept");
+        assertEquals(Action.EXECUTE, timer.tick(RESTART, WARNINGS));
+    }
+
+    @Test
+    void manualRestartReplacesWarnOnlyRun() {
+        timer.scheduleCron(RESTART, true);
+        LocalDateTime now = RESTART.minusMinutes(30);
+        timer.startManual(now, WARNINGS);
+        assertFalse(timer.isWarnOnly());
+        assertFalse(timer.scheduleCron(RESTART, true));
+        assertEquals(Action.EXECUTE, timer.tick(now.plusSeconds(11), WARNINGS));
+    }
+
+    @Test
+    void cancelClearsWarnOnly() {
+        timer.scheduleCron(RESTART, true);
+        timer.cancel();
+        assertFalse(timer.isWarnOnly());
+        assertEquals(Kind.NONE, timer.tick(RESTART.plusSeconds(1), WARNINGS).kind());
+    }
+
+    @Test
     void missedRestartExecutesImmediately() {
         timer.scheduleCron(RESTART);
         assertEquals(Action.EXECUTE, timer.tick(RESTART.plusMinutes(1), WARNINGS));
