@@ -15,7 +15,7 @@ EasyRestart is a server-side Forge mod that lets you schedule Minecraft server r
 - **Auto-relaunch** — optionally point the mod to a startup script; it will be launched as a detached process before the JVM shuts down, so the server comes back up automatically
 - **Forced shutdown watchdog** — if the server hangs during shutdown, a background watchdog forcefully terminates it after 120 seconds
 - **Rule validation** — invalid or impossible cron rules (e.g. `0 25 * * *`) are rejected with a clear message and never crash the server
-- **In-game commands** — add, remove, list, and reload cron rules without restarting; trigger an immediate restart with `/easyrestart now`
+- **In-game commands** — add, remove, list, and reload cron rules without restarting; trigger an immediate restart with `/easyrestart now` or skip the next one with `/easyrestart cancel`
 - **Fully configurable messages** — all broadcast strings support placeholders and Minecraft color codes
 
 ---
@@ -58,6 +58,7 @@ Config file: `config/easy_restart-common.toml`
 | `finalCountdown` | `{seconds}` | Broadcast each second during the final 10-second countdown |
 | `restartNow` | — | Broadcast when `/easyrestart now` is used, before its 10-second countdown |
 | `scheduledStart` | — | Currently unused |
+| `cancelled` | — | Broadcast when `/easyrestart cancel` stops a restart players had already been warned about |
 
 All messages support Minecraft color codes (`§a`, `§c`, etc.).
 
@@ -152,6 +153,7 @@ All commands require operator permission level 2.
 | `/easyrestart list` | List all active cron rules with their IDs and the next restart |
 | `/easyrestart reload` | Reload rules from the config file |
 | `/easyrestart now` | Restart after a 10-second countdown |
+| `/easyrestart cancel` | Cancel the pending restart. A cron restart is skipped and the rule's following run is scheduled; a `now` restart is dropped. Players get the `cancelled` message if they had already been warned |
 | `/easyrestart help` | Show command usage |
 
 ---
@@ -161,6 +163,15 @@ All commands require operator permission level 2.
 - **Minecraft:** 1.20.1
 - **Mod loader:** Forge
 - **Side:** Server only — clients without the mod can join, and the server list doesn't show it as incompatible
+
+---
+
+## Development
+
+```bash
+./gradlew test    # unit tests for the cron parser and the restart timing
+./gradlew build   # builds build/libs/easy_restart-<version>.jar (runs the tests too)
+```
 
 ---
 
