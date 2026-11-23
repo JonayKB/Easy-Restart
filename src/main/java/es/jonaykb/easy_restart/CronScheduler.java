@@ -5,7 +5,9 @@ import net.minecraft.server.MinecraftServer;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import static es.jonaykb.easy_restart.EasyRestart.LOGGER;
 
 public class CronScheduler {
@@ -14,6 +16,8 @@ public class CronScheduler {
     private final RestartManager restartManager;
     private final MinecraftServer server;
     private LocalDateTime nextScheduledRestart = null;
+    /** Cron runs cancelled with /easyrestart cancel; only these exact times are skipped. */
+    private final Set<LocalDateTime> skippedRestarts = new HashSet<>();
 
     public CronScheduler(RestartManager restartManager, MinecraftServer server) {
         this.restartManager = restartManager;
@@ -37,13 +41,9 @@ public class CronScheduler {
 
     /** Schedules the earliest upcoming run among all rules, or cancels it if there is none. */
     public void scheduleNextRestart() {
-        LocalDateTime earliest = null;
-        for (CronRule rule : rules) {
-            LocalDateTime next = rule.getNextExecution();
-            if (next != null && (earliest == null || next.isBefore(earliest))) {
-                earliest = next;
-            }
-        }
+        LocalDateTime now = LocalDateTime.now();
+        skippedRestarts.removeIf(t -> !t.isAfter(now));
+        LocalDateTime earliest = CronRule.earliestNext(rules, now, skippedRestarts);
 
         nextScheduledRestart = earliest;
         if (earliest == null) {
@@ -52,6 +52,28 @@ public class CronScheduler {
         } else {
             restartManager.beginScheduledRestart(server, earliest);
         }
+    }
+
+    /**
+     * Cancels the pending restart. A manual one is simply dropped; a cron one is
+     * skipped and the following run is scheduled instead.
+     *
+     * @return the cancelled restart time, or null if nothing was pending or it was too late.
+     */
+    public LocalDateTime cancelNextRestart() {
+        LocalDateTime pending = restartManager.getRestartTime();
+        if (pending == null) {
+            return null;
+        }
+        boolean wasManual = restartManager.isManualRestart();
+        if (!restartManager.cancelRestart(server)) {
+            return null;
+        }
+        if (!wasManual) {
+            skippedRestarts.add(pending);
+        }
+        scheduleNextRestart();
+        return pending;
     }
 
     private void saveRules() {

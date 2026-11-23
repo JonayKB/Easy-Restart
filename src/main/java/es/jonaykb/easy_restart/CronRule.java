@@ -4,6 +4,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.BitSet;
+import java.util.Collection;
 
 /**
  * Standard 5-field cron expression: minute hour day-of-month month day-of-week.
@@ -97,6 +98,31 @@ public class CronRule {
             }
         }
         return null;
+    }
+
+    /** Earliest next run among {@code rules} strictly after {@code from}, or null if none. */
+    public static LocalDateTime earliestNext(Collection<CronRule> rules, LocalDateTime from) {
+        LocalDateTime earliest = null;
+        for (CronRule rule : rules) {
+            LocalDateTime next = rule.getNextExecutionFrom(from);
+            if (next != null && (earliest == null || next.isBefore(earliest))) {
+                earliest = next;
+            }
+        }
+        return earliest;
+    }
+
+    /**
+     * Like {@link #earliestNext(Collection, LocalDateTime)} but skipping the given
+     * run times (restarts cancelled with /easyrestart cancel).
+     */
+    public static LocalDateTime earliestNext(Collection<CronRule> rules, LocalDateTime from,
+            Collection<LocalDateTime> skipped) {
+        LocalDateTime next = earliestNext(rules, from);
+        while (next != null && skipped.contains(next)) {
+            next = earliestNext(rules, next);
+        }
+        return next;
     }
 
     private static boolean isWildcard(String field) {

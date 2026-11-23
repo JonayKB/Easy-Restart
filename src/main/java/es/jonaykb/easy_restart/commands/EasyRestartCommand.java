@@ -37,6 +37,8 @@ public class EasyRestartCommand {
                                 .executes(EasyRestartCommand::reload))
                         .then(Commands.literal("now")
                                 .executes(EasyRestartCommand::now))
+                        .then(Commands.literal("cancel")
+                                .executes(EasyRestartCommand::cancel))
                         .then(Commands.literal("help")
                                 .executes(EasyRestartCommand::help)));
     }
@@ -116,6 +118,21 @@ public class EasyRestartCommand {
         return 1;
     }
 
+    private static int cancel(CommandContext<CommandSourceStack> ctx) {
+        CronScheduler scheduler = EasyRestart.CRON_SCHEDULER;
+        if (scheduler == null) {
+            return notReady(ctx);
+        }
+        LocalDateTime cancelled = scheduler.cancelNextRestart();
+        if (cancelled == null) {
+            ctx.getSource().sendFailure(Component.literal("There is no pending restart to cancel."));
+            return 0;
+        }
+        ctx.getSource().sendSuccess(() -> Component.literal("§aCancelled the restart at " + cancelled.format(TIME_FORMAT) + "."), true);
+        sendNext(ctx);
+        return 1;
+    }
+
     private static int help(CommandContext<CommandSourceStack> ctx) {
         ctx.getSource().sendSuccess(() -> Component.literal(
                 "EasyRestart Commands:\n" +
@@ -124,6 +141,7 @@ public class EasyRestartCommand {
                         "/easyrestart list - List all cron rules and the next restart\n" +
                         "/easyrestart reload - Reload cron rules from config\n" +
                         "/easyrestart now - Restart after a " + RestartManager.COUNTDOWN_SECONDS + "-second countdown\n" +
+                        "/easyrestart cancel - Cancel the pending restart (cron rules keep running)\n" +
                         "/easyrestart help - Show this help message"),
                 false);
         return 1;

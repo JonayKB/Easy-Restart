@@ -26,6 +26,7 @@ public class ModConfig {
                 public final ForgeConfigSpec.ConfigValue<String> msgFinalCountdown;
                 public final ForgeConfigSpec.ConfigValue<String> msgRestartNow;
                 public final ForgeConfigSpec.ConfigValue<String> msgScheduledStart;
+                public final ForgeConfigSpec.ConfigValue<String> msgCancelled;
 
                 public final ForgeConfigSpec.ConfigValue<String> restartScriptPath;
 
@@ -84,6 +85,11 @@ public class ModConfig {
                         msgScheduledStart = builder.define(
                                         "scheduledStart",
                                         "§aReinicio programado para dentro de §e1 minuto.");
+
+                        msgCancelled = builder
+                                        .comment("Broadcast when a pending restart is cancelled with /easyrestart cancel,",
+                                                        "only if players had already been warned about it.")
+                                        .define("cancelled", "§aSe ha cancelado el reinicio del servidor.");
 
                         builder.pop();
                 }
