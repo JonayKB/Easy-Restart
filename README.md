@@ -9,6 +9,7 @@ EasyRestart is a server-side Forge mod that lets you schedule Minecraft server r
 ## Features
 
 - **Cron-based scheduling** — define any number of restart times using standard 5-field cron syntax (`minute hour day month weekday`)
+- **Warning-only rules** — for times when something else restarts the server (e.g. the machine reboots itself at 03:00): players get the same warnings and countdown, the world is saved, but the server is not restarted. Can be mixed with normal restart rules
 - **Pre-warning broadcasts** — configurable list of minutes before restart at which players are notified (default: 10, 5, 1 minute)
 - **Final countdown** — 10-second countdown with chat messages and configurable on-screen titles
 - **Sound alerts** — plays a pling sound on each warning and countdown tick (can be disabled)
@@ -48,7 +49,18 @@ Config file: `config/easy_restart-common.toml`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `rules` | `["0 3 * * *"]` | List of cron expressions. Multiple rules are supported |
+| `rules` | `["0 3 * * *"]` | Restart rules: warn players, then stop the server (and relaunch it if a script is set) |
+| `warnOnlyRules` | `[]` | Warning-only rules: same warnings and countdown, the world is saved when the countdown starts, but the server keeps running |
+
+Both lists can be used at once. If a restart rule and a warning-only rule fall on the same minute, the restart wins.
+
+**Example:** the machine reboots on its own every day at 03:00, and you also want a real server restart at 15:00:
+
+```toml
+[cron]
+    rules = ["0 15 * * *"]
+    warnOnlyRules = ["0 3 * * *"]
+```
 
 ### Messages
 
@@ -56,7 +68,7 @@ Config file: `config/easy_restart-common.toml`
 |-----|-------------|-------------|
 | `preWarning` | `{minutes}` | Broadcast when a pre-warning threshold is reached |
 | `finalCountdown` | `{seconds}` | Broadcast each second during the final 10-second countdown |
-| `restartNow` | — | Broadcast when `/easyrestart now` is used, before its 10-second countdown |
+| `restartNow` | — | Broadcast when `/easyrestart now` is used (before its 10-second countdown) and when a warning-only rule reaches its time |
 | `scheduledStart` | — | Currently unused |
 | `cancelled` | — | Broadcast when `/easyrestart cancel` stops a restart players had already been warned about |
 
@@ -148,9 +160,10 @@ All commands require operator permission level 2.
 
 | Command | Description |
 |---------|-------------|
-| `/easyrestart add <cron>` | Add a new cron rule (no quotes needed, e.g. `/easyrestart add 0 */6 * * *`) |
+| `/easyrestart add <cron>` | Add a restart rule (no quotes needed, e.g. `/easyrestart add 0 */6 * * *`) |
+| `/easyrestart addwarn <cron>` | Add a warning-only rule (warns and saves, never restarts) |
 | `/easyrestart remove <id>` | Remove a cron rule by its list index |
-| `/easyrestart list` | List all active cron rules with their IDs and the next restart |
+| `/easyrestart list` | List all rules with their IDs and type (`[restart]` / `[warning only]`) and the next restart |
 | `/easyrestart reload` | Reload rules from the config file |
 | `/easyrestart now` | Restart after a 10-second countdown |
 | `/easyrestart cancel` | Cancel the pending restart. A cron restart is skipped and the rule's following run is scheduled; a `now` restart is dropped. Players get the `cancelled` message if they had already been warned |
