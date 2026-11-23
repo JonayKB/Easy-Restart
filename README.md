@@ -14,6 +14,7 @@ EasyRestart is a server-side Forge mod that lets you schedule Minecraft server r
 - **Sound alerts** — plays a pling sound on each warning and countdown tick (can be disabled)
 - **Auto-relaunch** — optionally point the mod to a startup script; it will be launched as a detached process before the JVM shuts down, so the server comes back up automatically
 - **Forced shutdown watchdog** — if the server hangs during shutdown, a background watchdog forcefully terminates it after 120 seconds
+- **Rule validation** — invalid or impossible cron rules (e.g. `0 25 * * *`) are rejected with a clear message and never crash the server
 - **In-game commands** — add, remove, list, and reload cron rules without restarting; trigger an immediate restart with `/easyrestart now`
 - **Fully configurable messages** — all broadcast strings support placeholders and Minecraft color codes
 
@@ -55,8 +56,8 @@ Config file: `config/easy_restart-common.toml`
 |-----|-------------|-------------|
 | `preWarning` | `{minutes}` | Broadcast when a pre-warning threshold is reached |
 | `finalCountdown` | `{seconds}` | Broadcast each second during the final 10-second countdown |
-| `restartNow` | — | Broadcast when an immediate restart is triggered |
-| `scheduledStart` | — | Broadcast when a restart is first scheduled |
+| `restartNow` | — | Broadcast when `/easyrestart now` is used, before its 10-second countdown |
+| `scheduledStart` | — | Currently unused |
 
 All messages support Minecraft color codes (`§a`, `§c`, etc.).
 
@@ -75,6 +76,8 @@ EasyRestart uses standard 5-field POSIX cron expressions:
 │ │ │ │ │
 * * * * *
 ```
+
+Supported syntax: `*`, lists (`1,4`), ranges (`1-5`) and steps (`*/6`, `5/15`). Day of week accepts `0`–`7` (both `0` and `7` are Sunday). When both day of month and day of week are restricted, a day matches if **either** one matches, as in standard cron. Times use the server's local time zone.
 
 **Examples:**
 
@@ -132,7 +135,9 @@ restartScriptPath = "start.bat"
 # or absolute: restartScriptPath = "C:/servers/minecraft/start.bat"
 ```
 
-> **Note:** The script is launched as a detached process before the JVM exits, so it will survive the server shutdown. Make sure the script is not run inside a session manager (like `screen` or `tmux`) that would die with the parent process — or wrap the script launch in a new `screen`/`tmux` session if needed.
+> **Note:** The script is launched as a detached process once the server has fully stopped (world saved, port and world lock released), so the new instance can start cleanly. Its output is discarded, so the new server has no attached console; if you need one, have the script start the server inside a new `screen`/`tmux` session.
+>
+> If the server runs as a **systemd** service, leave `restartScriptPath` empty and use `Restart=always` in the unit instead: systemd kills child processes when the service's main process exits.
 
 ---
 
@@ -142,20 +147,20 @@ All commands require operator permission level 2.
 
 | Command | Description |
 |---------|-------------|
-| `/easyrestart add <cron>` | Add a new cron rule |
+| `/easyrestart add <cron>` | Add a new cron rule (no quotes needed, e.g. `/easyrestart add 0 */6 * * *`) |
 | `/easyrestart remove <id>` | Remove a cron rule by its list index |
-| `/easyrestart list` | List all active cron rules with their IDs |
+| `/easyrestart list` | List all active cron rules with their IDs and the next restart |
 | `/easyrestart reload` | Reload rules from the config file |
-| `/easyrestart now` | Trigger an immediate restart |
+| `/easyrestart now` | Restart after a 10-second countdown |
 | `/easyrestart help` | Show command usage |
 
 ---
 
 ## Compatibility
 
-- **Minecraft:** 1.20.x
+- **Minecraft:** 1.20.1
 - **Mod loader:** Forge
-- **Side:** Server only
+- **Side:** Server only — clients without the mod can join, and the server list doesn't show it as incompatible
 
 ---
 

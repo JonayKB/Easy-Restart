@@ -4,6 +4,7 @@ import net.minecraft.server.MinecraftServer;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import static es.jonaykb.easy_restart.EasyRestart.LOGGER;
 
@@ -20,45 +21,40 @@ public class CronScheduler {
         loadRules();
     }
 
+    /** Reloads the rules from the config. Invalid rules are skipped and logged. */
     public void loadRules() {
         rules.clear();
         for (String raw : ModConfig.SERVER.cronRules.get()) {
             try {
-                CronRule rule = new CronRule(raw);
-                rules.add(rule);
-                LOGGER.info("EasyRestart: Cron rule loaded: " + raw);
-            } catch (Exception e) {
-                LOGGER.error("EasyRestart: Invalid cron rule: " + raw, e);
+                rules.add(new CronRule(raw));
+                LOGGER.info("EasyRestart: Cron rule loaded: {}", raw);
+            } catch (IllegalArgumentException e) {
+                LOGGER.error("EasyRestart: Skipping invalid cron rule '{}': {}", raw, e.getMessage());
             }
         }
-
-        // Encontrar el próximo reinicio de todas las reglas
         scheduleNextRestart();
     }
 
-    private void scheduleNextRestart() {
-        if (rules.isEmpty()) {
-            nextScheduledRestart = null;
-            return;
-        }
-
-        // Encontrar la próxima ejecución más temprana de todas las reglas
+    /** Schedules the earliest upcoming run among all rules, or cancels it if there is none. */
+    public void scheduleNextRestart() {
         LocalDateTime earliest = null;
         for (CronRule rule : rules) {
             LocalDateTime next = rule.getNextExecution();
-            if (earliest == null || next.isBefore(earliest)) {
+            if (next != null && (earliest == null || next.isBefore(earliest))) {
                 earliest = next;
             }
         }
 
         nextScheduledRestart = earliest;
-        if (nextScheduledRestart != null) {
-            restartManager.beginScheduledRestart(server, nextScheduledRestart);
-            LOGGER.info("EasyRestart: Next restart scheduled at: " + nextScheduledRestart);
+        if (earliest == null) {
+            restartManager.cancelScheduledRestart();
+            LOGGER.info("EasyRestart: No restart scheduled.");
+        } else {
+            restartManager.beginScheduledRestart(server, earliest);
         }
     }
 
-    public void saveRules() {
+    private void saveRules() {
         List<String> rawRules = new ArrayList<>();
         for (CronRule rule : rules) {
             rawRules.add(rule.getRaw());
@@ -67,30 +63,33 @@ public class CronScheduler {
         ModConfig.SERVER.cronRules.save();
     }
 
-    public void addRule(String raw) {
-        try {
-            CronRule rule = new CronRule(raw);
-            rules.add(rule);
-            LOGGER.info("Cron rule added: " + raw);
-            saveRules();
-            scheduleNextRestart(); 
-        } catch (Exception e) {
-            LOGGER.error("Invalid cron rule: " + raw, e);
-        }
+    /**
+     * Adds and saves a rule.
+     *
+     * @throws IllegalArgumentException if the rule is invalid; nothing is saved.
+     */
+    public CronRule addRule(String raw) {
+        CronRule rule = new CronRule(raw);
+        rules.add(rule);
+        LOGGER.info("EasyRestart: Cron rule added: {}", rule.getRaw());
+        saveRules();
+        scheduleNextRestart();
+        return rule;
     }
 
-    public boolean removeRule(int index) {
-        if (index < 0 || index >= rules.size())
-            return false;
+    public CronRule removeRule(int index) {
+        if (index < 0 || index >= rules.size()) {
+            return null;
+        }
         CronRule removed = rules.remove(index);
-        LOGGER.info("Cron rule removed: " + removed.getRaw());
+        LOGGER.info("EasyRestart: Cron rule removed: {}", removed.getRaw());
         saveRules();
-        scheduleNextRestart(); // Recalcular próximo reinicio
-        return true;
+        scheduleNextRestart();
+        return removed;
     }
 
     public List<CronRule> getRules() {
-        return rules;
+        return Collections.unmodifiableList(rules);
     }
 
     public LocalDateTime getNextScheduledRestart() {
