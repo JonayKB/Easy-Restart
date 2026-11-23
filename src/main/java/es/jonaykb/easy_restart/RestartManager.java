@@ -1,6 +1,7 @@
 package es.jonaykb.easy_restart;
 
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ClientboundClearTitlesPacket;
 import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
@@ -8,43 +9,29 @@ import net.minecraft.sounds.SoundEvents;
 
 import java.io.File;
 import java.io.IOException;
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static es.jonaykb.easy_restart.EasyRestart.LOGGER;
 
+/** Turns {@link RestartTimer} decisions into messages, sounds and the actual shutdown. */
 public class RestartManager {
 
-    /** Length of the final per-second countdown. */
-    public static final int COUNTDOWN_SECONDS = 10;
+    public static final int COUNTDOWN_SECONDS = RestartTimer.COUNTDOWN_SECONDS;
     /** Seconds the server gets to shut down before the JVM is killed. */
     private static final int FORCED_SHUTDOWN_SECONDS = 120;
 
-    private LocalDateTime restartTime = null;
-    /** True when the pending restart came from /easyrestart now, so cron changes don't replace it. */
-    private boolean manual = false;
-    private final Set<Integer> warned = new HashSet<>();
-    private long lastCountdownSecond = -1;
+    private final RestartTimer timer = new RestartTimer();
     private boolean stopping = false;
-
     private final AtomicBoolean scriptPending = new AtomicBoolean(false);
 
     /** Schedules a cron restart. Ignored while a manual restart is pending. */
     public void beginScheduledRestart(MinecraftServer server, LocalDateTime scheduledTime) {
-        if (manual || stopping) {
-            return;
+        if (!stopping && timer.scheduleCron(scheduledTime)) {
+            LOGGER.info("EasyRestart: Next restart scheduled at {}", scheduledTime);
         }
-        if (scheduledTime.equals(restartTime)) {
-            return;
-        }
-        restartTime = scheduledTime;
-        resetWarnings();
-        LOGGER.info("EasyRestart: Next restart scheduled at {}", scheduledTime);
     }
 
     /** Starts the final countdown right away. */
@@ -52,11 +39,7 @@ public class RestartManager {
         if (stopping) {
             return;
         }
-        restartTime = LocalDateTime.now().plusSeconds(COUNTDOWN_SECONDS);
-        manual = true;
-        resetWarnings();
-        // Skip the minute warnings: only the countdown is shown.
-        warned.addAll(ModConfig.SERVER.preWarningMinutes.get());
+        timer.startManual(LocalDateTime.now(), ModConfig.SERVER.preWarningMinutes.get());
         broadcast(server, ModConfig.SERVER.msgRestartNow.get());
         playSound(server);
         LOGGER.info("EasyRestart: Manual restart in {} seconds", COUNTDOWN_SECONDS);
@@ -64,60 +47,55 @@ public class RestartManager {
 
     /** Drops a pending cron restart (a manual one is kept). */
     public void cancelScheduledRestart() {
-        if (manual) {
-            return;
-        }
-        restartTime = null;
-        resetWarnings();
+        timer.clearCron();
     }
 
-    private void resetWarnings() {
-        warned.clear();
-        lastCountdownSecond = -1;
+    /**
+     * Cancels the pending restart, cron or manual, and tells players if they had
+     * already been warned. Returns false if it's too late (the server is stopping).
+     */
+    public boolean cancelRestart(MinecraftServer server) {
+        if (stopping) {
+            return false;
+        }
+        boolean announced = timer.isAnnounced();
+        timer.cancel();
+        if (announced) {
+            broadcast(server, ModConfig.SERVER.msgCancelled.get());
+            clearTitle(server);
+        }
+        LOGGER.info("EasyRestart: Pending restart cancelled");
+        return true;
     }
 
     public void tick(MinecraftServer server) {
-        if (stopping || restartTime == null) {
+        if (stopping) {
             return;
         }
-
-        long millisLeft = Duration.between(LocalDateTime.now(), restartTime).toMillis();
-        if (millisLeft <= 0) {
-            executeRestart(server);
-            return;
-        }
-        long secondsLeft = (millisLeft + 999) / 1000;
-
-        // Minute warnings. If several thresholds are crossed at once (the restart was
-        // scheduled late), send one message with the real time left.
-        if (secondsLeft > COUNTDOWN_SECONDS) {
-            boolean crossed = false;
-            for (int min : ModConfig.SERVER.preWarningMinutes.get()) {
-                if (secondsLeft <= min * 60L && warned.add(min)) {
-                    crossed = true;
-                }
-            }
-            if (crossed) {
-                long minutesLeft = Math.max(1, (secondsLeft + 59) / 60);
-                broadcastPreWarning(server, minutesLeft);
+        RestartTimer.Action action = timer.tick(LocalDateTime.now(), ModConfig.SERVER.preWarningMinutes.get());
+        switch (action.kind()) {
+            case WARNING -> {
+                broadcast(server, ModConfig.SERVER.msgPreWarning.get()
+                        .replace("{minutes}", String.valueOf(action.value())));
                 playSound(server);
-                LOGGER.info("EasyRestart: Server restart in {} minute(s).", minutesLeft);
+                LOGGER.info("EasyRestart: Server restart in {} minute(s).", action.value());
             }
-        }
-
-        // Final countdown, once per second.
-        if (secondsLeft <= COUNTDOWN_SECONDS && secondsLeft != lastCountdownSecond) {
-            lastCountdownSecond = secondsLeft;
-            broadcastFinalCountdown(server, secondsLeft);
-            playSound(server);
-            LOGGER.info("EasyRestart: Server restart in {} seconds.", secondsLeft);
+            case COUNTDOWN -> {
+                broadcast(server, ModConfig.SERVER.msgFinalCountdown.get()
+                        .replace("{seconds}", String.valueOf(action.value())));
+                showTitle(server, "§c" + action.value());
+                playSound(server);
+                LOGGER.info("EasyRestart: Server restart in {} seconds.", action.value());
+            }
+            case EXECUTE -> executeRestart(server);
+            case NONE -> {
+            }
         }
     }
 
     private void executeRestart(MinecraftServer server) {
         LOGGER.info("EasyRestart: Executing restart");
         stopping = true;
-        restartTime = null;
 
         // The script is launched once the server has fully stopped (see onServerStopped),
         // so the new instance doesn't find the port and the world lock still taken.
@@ -213,15 +191,6 @@ public class RestartManager {
         server.getPlayerList().broadcastSystemMessage(Component.literal(msg), false);
     }
 
-    private void broadcastPreWarning(MinecraftServer server, long minutes) {
-        broadcast(server, ModConfig.SERVER.msgPreWarning.get().replace("{minutes}", String.valueOf(minutes)));
-    }
-
-    private void broadcastFinalCountdown(MinecraftServer server, long seconds) {
-        broadcast(server, ModConfig.SERVER.msgFinalCountdown.get().replace("{seconds}", String.valueOf(seconds)));
-        showTitle(server, "§c" + seconds);
-    }
-
     private void playSound(MinecraftServer server) {
         if (!ModConfig.SERVER.enableSounds.get()) {
             return;
@@ -241,15 +210,22 @@ public class RestartManager {
         }
     }
 
+    private void clearTitle(MinecraftServer server) {
+        ClientboundClearTitlesPacket packet = new ClientboundClearTitlesPacket(true);
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            player.connection.send(packet);
+        }
+    }
+
     public boolean isRestartScheduled() {
-        return restartTime != null;
+        return timer.getRestartTime() != null;
     }
 
     public boolean isManualRestart() {
-        return manual;
+        return timer.isManual();
     }
 
     public LocalDateTime getRestartTime() {
-        return restartTime;
+        return timer.getRestartTime();
     }
 }
