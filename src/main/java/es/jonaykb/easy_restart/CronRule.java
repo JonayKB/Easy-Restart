@@ -4,6 +4,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.BitSet;
+import java.util.Collection;
 
 /**
  * Standard 5-field cron expression: minute hour day-of-month month day-of-week.
@@ -17,6 +18,8 @@ public class CronRule {
     private static final int SEARCH_YEARS = 8;
 
     private final String raw;
+    /** True for rules that only warn players (e.g. the machine itself reboots at that time). */
+    private final boolean warnOnly;
     private final BitSet minutes;
     private final BitSet hours;
     private final BitSet daysOfMonth;
@@ -30,6 +33,16 @@ public class CronRule {
      *                                  range, or can never run.
      */
     public CronRule(String rule) {
+        this(rule, false);
+    }
+
+    /**
+     * @param warnOnly true if this rule only warns players and never restarts the server.
+     * @throws IllegalArgumentException if the expression is malformed, out of
+     *                                  range, or can never run.
+     */
+    public CronRule(String rule, boolean warnOnly) {
+        this.warnOnly = warnOnly;
         this.raw = rule.trim();
         String[] parts = raw.split("\\s+");
         if (parts.length != 5) {
@@ -55,6 +68,14 @@ public class CronRule {
 
     public String getRaw() {
         return raw;
+    }
+
+    public boolean isWarnOnly() {
+        return warnOnly;
+    }
+
+    /** A scheduled run: when, and whether it only warns or really restarts. */
+    public record Run(LocalDateTime time, boolean warnOnly) {
     }
 
     public boolean matches(LocalDateTime time) {
@@ -97,6 +118,50 @@ public class CronRule {
             }
         }
         return null;
+    }
+
+    /** Earliest next run among {@code rules} strictly after {@code from}, or null if none. */
+    public static LocalDateTime earliestNext(Collection<CronRule> rules, LocalDateTime from) {
+        LocalDateTime earliest = null;
+        for (CronRule rule : rules) {
+            LocalDateTime next = rule.getNextExecutionFrom(from);
+            if (next != null && (earliest == null || next.isBefore(earliest))) {
+                earliest = next;
+            }
+        }
+        return earliest;
+    }
+
+    /**
+     * Like {@link #earliestNext(Collection, LocalDateTime)} but skipping the given
+     * run times (restarts cancelled with /easyrestart cancel).
+     */
+    public static LocalDateTime earliestNext(Collection<CronRule> rules, LocalDateTime from,
+            Collection<LocalDateTime> skipped) {
+        LocalDateTime next = earliestNext(rules, from);
+        while (next != null && skipped.contains(next)) {
+            next = earliestNext(rules, next);
+        }
+        return next;
+    }
+
+    /**
+     * Next run among {@code rules} after {@code from}, skipping {@code skipped} times.
+     * If a restart rule and a warn-only rule fall on the same minute, the restart wins.
+     */
+    public static Run nextRun(Collection<CronRule> rules, LocalDateTime from, Collection<LocalDateTime> skipped) {
+        LocalDateTime time = earliestNext(rules, from, skipped);
+        if (time == null) {
+            return null;
+        }
+        boolean warnOnly = true;
+        for (CronRule rule : rules) {
+            if (!rule.warnOnly && rule.matches(time)) {
+                warnOnly = false;
+                break;
+            }
+        }
+        return new Run(time, warnOnly);
     }
 
     private static boolean isWildcard(String field) {
@@ -164,6 +229,6 @@ public class CronRule {
 
     @Override
     public String toString() {
-        return "CronRule{" + raw + '}';
+        return "CronRule{" + raw + (warnOnly ? ", warn only" : "") + '}';
     }
 }
