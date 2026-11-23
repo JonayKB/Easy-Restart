@@ -26,6 +26,8 @@ public class RestartManager {
     private final RestartTimer timer = new RestartTimer();
     private boolean stopping = false;
     private final AtomicBoolean scriptPending = new AtomicBoolean(false);
+    /** Exit code for the JVM once the server has stopped; 0 = leave the normal exit alone. */
+    private volatile int exitCode = 0;
     /** Warn-only run whose world save has already been done. */
     private LocalDateTime savedForWarnOnly = null;
     /** Called when a warn-only run has passed, to schedule the next one. */
@@ -133,14 +135,37 @@ public class RestartManager {
         // The script is launched once the server has fully stopped (see onServerStopped),
         // so the new instance doesn't find the port and the world lock still taken.
         scriptPending.set(relaunch);
+        exitCode = relaunch ? ModConfig.SERVER.restartExitCode.get() : 0;
         startForcedShutdownWatchdog();
 
         server.halt(false);
     }
 
     /** Called from ServerStoppedEvent: port and world are free, start the new server. */
-    public void onServerStopped() {
+    public void onServerStopped(MinecraftServer server) {
         launchRestartScriptIfPending();
+        if (stopping && exitCode != 0) {
+            exitWithCodeAfter(server.getRunningThread(), exitCode);
+        }
+    }
+
+    /**
+     * Ends the JVM with {@code code} once the server thread has finished. It can't be
+     * done from the server thread itself: System.exit runs the vanilla shutdown hook,
+     * which waits for the server thread, so it would deadlock. The thread is non-daemon
+     * so the JVM can't exit with 0 before it gets to run.
+     */
+    private static void exitWithCodeAfter(Thread serverThread, int code) {
+        Thread exiter = new Thread(() -> {
+            try {
+                serverThread.join(60_000);
+            } catch (InterruptedException ignored) {
+            }
+            LOGGER.info("EasyRestart: Server stopped, exiting with code {} so the panel restarts it.", code);
+            System.exit(code);
+        }, "EasyRestart-ExitCode");
+        exiter.setDaemon(false);
+        exiter.start();
     }
 
     private void launchRestartScriptIfPending() {
@@ -214,7 +239,7 @@ public class RestartManager {
             LOGGER.error("EasyRestart: Server still running {}s after the restart began. Forcing exit.",
                     FORCED_SHUTDOWN_SECONDS);
             launchRestartScriptIfPending();
-            Runtime.getRuntime().halt(0);
+            Runtime.getRuntime().halt(exitCode);
         }, "EasyRestart-ForcedShutdownWatchdog");
         watchdog.setDaemon(true);
         watchdog.start();

@@ -44,6 +44,7 @@ Config file: `config/easy_restart-common.toml`
 | `enableSounds` | `true` | Play sound alerts on warnings and countdown ticks |
 | `enableTitles` | `true` | Show on-screen title during the final 10-second countdown |
 | `preWarningMinutes` | `[10, 5, 1]` | Minutes before restart at which broadcast warnings are sent |
+| `restartExitCode` | `0` | Exit code the process ends with after a restart rule or `/easyrestart now`. For panels (Crafty, Pterodactyl, AMP…), see [Panels](#panels-crafty-pterodactyl-amp). Stop rules and manual `/stop` always exit with `0` |
 | `restartScriptPath` | `""` | Path to the script that starts the server. Accepts absolute or relative paths. Leave empty to disable auto-relaunch |
 
 ### Cron Rules
@@ -166,6 +167,20 @@ restartScriptPath = "start.bat"
 > **Note:** The script is launched as a detached process once the server has fully stopped (world saved, port and world lock released), so the new instance can start cleanly. Its output is discarded, so the new server has no attached console; if you need one, have the script start the server inside a new `screen`/`tmux` session.
 >
 > If the server runs as a **systemd** service, leave `restartScriptPath` empty and use `Restart=always` in the unit instead: systemd kills child processes when the service's main process exits.
+
+---
+
+## Panels (Crafty, Pterodactyl, AMP…)
+
+Panels only manage the server process they started themselves: a server launched by `restartScriptPath` runs outside the panel, with no console in it, and the panel thinks the server is off. With a panel, let the panel relaunch the server instead:
+
+1. Leave `restartScriptPath = ""`.
+2. Set `restartExitCode` to a non-zero code, e.g. `1`.
+3. Turn on the panel's crash detection / auto-restart, making sure that code is **not** an ignored exit code. In Crafty: the server's *Crash detection* setting and its *ignored exit codes* list.
+
+After a restart rule or `/easyrestart now`, the server stops cleanly, the world is saved, and the process exits with that code, so the panel sees a "crash" and starts it again with its own console. Stop rules and manual `/stop` exit with `0`: if `0` is an ignored exit code in the panel, they stay stopped.
+
+If another mod also sets the exit code (e.g. to report crashes), Easy-Restart only sets it when it stopped the server itself; real crashes are left to that mod. Use a code for `restartExitCode` that the panel restarts on.
 
 ---
 
