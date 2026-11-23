@@ -8,117 +8,140 @@ import net.minecraft.sounds.SoundEvents;
 
 import java.io.File;
 import java.io.IOException;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static es.jonaykb.easy_restart.EasyRestart.LOGGER;
 
 public class RestartManager {
 
-    private boolean restartScheduled = false;
-    private LocalDateTime restartTime = null;
-    private final Set<Integer> warned = new HashSet<>();
-    private int tickCount = 0;
-    private Thread forcedShutdownWatchdog = null;
-    private volatile boolean normalShutdownCompleted = false;
+    /** Length of the final per-second countdown. */
+    public static final int COUNTDOWN_SECONDS = 10;
+    /** Seconds the server gets to shut down before the JVM is killed. */
+    private static final int FORCED_SHUTDOWN_SECONDS = 120;
 
+    private LocalDateTime restartTime = null;
+    /** True when the pending restart came from /easyrestart now, so cron changes don't replace it. */
+    private boolean manual = false;
+    private final Set<Integer> warned = new HashSet<>();
+    private long lastCountdownSecond = -1;
+    private boolean stopping = false;
+
+    private final AtomicBoolean scriptPending = new AtomicBoolean(false);
+
+    /** Schedules a cron restart. Ignored while a manual restart is pending. */
     public void beginScheduledRestart(MinecraftServer server, LocalDateTime scheduledTime) {
-        if (restartScheduled && restartTime != null && restartTime.equals(scheduledTime)) {
-            LOGGER.info("EasyRestart: Same restart already scheduled at " + scheduledTime);
+        if (manual || stopping) {
             return;
         }
-
-        restartScheduled = true;
+        if (scheduledTime.equals(restartTime)) {
+            return;
+        }
         restartTime = scheduledTime;
-        warned.clear();
+        resetWarnings();
+        LOGGER.info("EasyRestart: Next restart scheduled at {}", scheduledTime);
+    }
 
-        LOGGER.info("EasyRestart: New restart scheduled at " + scheduledTime);
+    /** Starts the final countdown right away. */
+    public void beginManualRestart(MinecraftServer server) {
+        if (stopping) {
+            return;
+        }
+        restartTime = LocalDateTime.now().plusSeconds(COUNTDOWN_SECONDS);
+        manual = true;
+        resetWarnings();
+        // Skip the minute warnings: only the countdown is shown.
+        warned.addAll(ModConfig.SERVER.preWarningMinutes.get());
+        broadcast(server, ModConfig.SERVER.msgRestartNow.get());
+        playSound(server);
+        LOGGER.info("EasyRestart: Manual restart in {} seconds", COUNTDOWN_SECONDS);
+    }
+
+    /** Drops a pending cron restart (a manual one is kept). */
+    public void cancelScheduledRestart() {
+        if (manual) {
+            return;
+        }
+        restartTime = null;
+        resetWarnings();
+    }
+
+    private void resetWarnings() {
+        warned.clear();
+        lastCountdownSecond = -1;
     }
 
     public void tick(MinecraftServer server) {
-        update(server);
-    }
-
-    private void update(MinecraftServer server) {
-        if (!restartScheduled || restartTime == null)
-            return;
-
-        long secondsLeft = java.time.Duration.between(LocalDateTime.now(), restartTime).getSeconds();
-
-        if (secondsLeft < 0) {
-            executeRestart(server);
+        if (stopping || restartTime == null) {
             return;
         }
 
-        // Warnings
-        for (int min : ModConfig.SERVER.preWarningMinutes.get()) {
-            if (secondsLeft <= min * 60 && !warned.contains(min)) {
-                warned.add(min);
-                broadcastPreWarning(server, min);
-                playSound(server);
-                LOGGER.info("Prewarning: Server restart in " + min + " minutes.");
-            }
-        }
-
-        // Countdown
-        if (secondsLeft <= 10 && secondsLeft > 0) {
-            if (tickCount % 20 == 0) {
-                LOGGER.info("EasyRestart: Server restart in " + secondsLeft + " seconds.");
-                broadcastFinalCountdown(server, secondsLeft);
-                playSound(server);
-            }
-            tickCount++;
-        }
-
-        // Restart
-        if (secondsLeft == 0) {
+        long millisLeft = Duration.between(LocalDateTime.now(), restartTime).toMillis();
+        if (millisLeft <= 0) {
             executeRestart(server);
+            return;
+        }
+        long secondsLeft = (millisLeft + 999) / 1000;
+
+        // Minute warnings. If several thresholds are crossed at once (the restart was
+        // scheduled late), send one message with the real time left.
+        if (secondsLeft > COUNTDOWN_SECONDS) {
+            boolean crossed = false;
+            for (int min : ModConfig.SERVER.preWarningMinutes.get()) {
+                if (secondsLeft <= min * 60L && warned.add(min)) {
+                    crossed = true;
+                }
+            }
+            if (crossed) {
+                long minutesLeft = Math.max(1, (secondsLeft + 59) / 60);
+                broadcastPreWarning(server, minutesLeft);
+                playSound(server);
+                LOGGER.info("EasyRestart: Server restart in {} minute(s).", minutesLeft);
+            }
+        }
+
+        // Final countdown, once per second.
+        if (secondsLeft <= COUNTDOWN_SECONDS && secondsLeft != lastCountdownSecond) {
+            lastCountdownSecond = secondsLeft;
+            broadcastFinalCountdown(server, secondsLeft);
+            playSound(server);
+            LOGGER.info("EasyRestart: Server restart in {} seconds.", secondsLeft);
         }
     }
 
     private void executeRestart(MinecraftServer server) {
-        LOGGER.info("EasyRestart: Executing scheduled restart");
-
-        // Lanzar el script de arranque ANTES de que el JVM muera
-        launchRestartScript();
-
-        // Inicia el watchdog de apagado forzado
-        startForcedShutdownWatchdog(server, 120);
-
-        // Guardar mundos
-        server.saveAllChunks(true, true, true);
-
-        normalShutdownCompleted = false;
-
-        // Ordenar al servidor que se apague
-        server.halt(false);
-
-        // Limpiar estado
-        restartScheduled = false;
+        LOGGER.info("EasyRestart: Executing restart");
+        stopping = true;
         restartTime = null;
-        warned.clear();
+
+        // The script is launched once the server has fully stopped (see onServerStopped),
+        // so the new instance doesn't find the port and the world lock still taken.
+        scriptPending.set(true);
+        startForcedShutdownWatchdog();
+
+        server.halt(false);
+    }
+
+    /** Called from ServerStoppedEvent: port and world are free, start the new server. */
+    public void onServerStopped() {
+        launchRestartScriptIfPending();
+    }
+
+    private void launchRestartScriptIfPending() {
+        if (scriptPending.compareAndSet(true, false)) {
+            launchRestartScript();
+        }
     }
 
     /**
-     * Lanza el script de reinicio del servidor en un proceso independiente.
-     *
-     * <p>
-     * El proceso se lanza desacoplado del JVM actual mediante
-     * {@code ProcessBuilder}
-     * con {@code inheritIO()} desactivado e I/O redirigido a DISCARD, de modo que
-     * sobrevive al apagado del servidor sin quedar colgado esperando streams.
-     * </p>
-     *
-     * <p>
-     * Se acepta tanto ruta absoluta como relativa al directorio de trabajo del
-     * servidor.
-     * En Linux/macOS se llama directamente al script; en Windows se invoca a través
-     * de
-     * {@code cmd /c} para que los .bat y .cmd funcionen correctamente.
-     * </p>
+     * Launches the restart script as a separate process with its output discarded,
+     * so it keeps running after this JVM exits. Relative paths are resolved from the
+     * server directory. On Windows it goes through {@code cmd /c} so .bat/.cmd work.
      */
     private void launchRestartScript() {
         String scriptPath = ModConfig.SERVER.restartScriptPath.get();
@@ -134,23 +157,18 @@ public class RestartManager {
         }
 
         if (!scriptFile.exists()) {
-            LOGGER.error("EasyRestart: Restart script not found: " + scriptFile.getAbsolutePath());
+            LOGGER.error("EasyRestart: Restart script not found: {}", scriptFile.getAbsolutePath());
             return;
         }
 
-        // Asegurar permisos de ejecución en Unix
-        if (!scriptFile.canExecute()) {
-            boolean marked = scriptFile.setExecutable(true);
-            if (!marked) {
-                LOGGER.warn("EasyRestart: Could not set executable permission on: " + scriptFile.getAbsolutePath()
-                        + " — the script may fail to start.");
-            }
+        boolean isWindows = System.getProperty("os.name", "").toLowerCase().contains("win");
+        if (!isWindows && !scriptFile.canExecute() && !scriptFile.setExecutable(true)) {
+            LOGGER.warn("EasyRestart: Could not set executable permission on {} — the script may fail to start.",
+                    scriptFile.getAbsolutePath());
         }
 
         try {
             List<String> command = new ArrayList<>();
-
-            boolean isWindows = System.getProperty("os.name", "").toLowerCase().contains("win");
             if (isWindows) {
                 command.add("cmd");
                 command.add("/c");
@@ -158,94 +176,77 @@ public class RestartManager {
             command.add(scriptFile.getAbsolutePath());
 
             ProcessBuilder pb = new ProcessBuilder(command);
-            pb.directory(scriptFile.getParentFile()); 
+            pb.directory(scriptFile.getAbsoluteFile().getParentFile());
             pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
             pb.redirectError(ProcessBuilder.Redirect.DISCARD);
 
             Process process = pb.start();
-            LOGGER.info("EasyRestart: Restart script launched (PID " + process.pid() + "): "
-                    + scriptFile.getAbsolutePath());
-
+            LOGGER.info("EasyRestart: Restart script launched (PID {}): {}", process.pid(),
+                    scriptFile.getAbsolutePath());
         } catch (IOException e) {
             LOGGER.error("EasyRestart: Failed to launch restart script: " + scriptFile.getAbsolutePath(), e);
         }
     }
 
-    private void startForcedShutdownWatchdog(MinecraftServer server, int seconds) {
-        forcedShutdownWatchdog = new Thread(() -> {
-            int remaining = seconds;
-
+    /**
+     * Kills the JVM if it is still alive after {@link #FORCED_SHUTDOWN_SECONDS}
+     * (hung shutdown or a mod thread keeping it open). Daemon thread, so a normal
+     * exit just ends it.
+     */
+    private void startForcedShutdownWatchdog() {
+        Thread watchdog = new Thread(() -> {
             try {
-                while (remaining > 0) {
-                    if (normalShutdownCompleted) {
-                        LOGGER.info("EasyRestart: Normal shutdown completed. Watchdog cancelled.");
-                        return;
-                    }
-
-                    String msg = "El servidor se está apagando... apagado forzado en "
-                            + remaining + " segundos.";
-                    broadcast(server, msg);
-
-                    LOGGER.info("[EasyRestart] Forced shutdown in " + remaining + "s");
-                    Thread.sleep(1000);
-
-                    remaining--;
-                }
-
-                LOGGER.error("EasyRestart: Timeout reached. Forcing immediate shutdown.");
-                Runtime.getRuntime().halt(0);
-
-            } catch (InterruptedException ignored) {
-                LOGGER.info("EasyRestart: Forced shutdown watchdog interrupted.");
+                Thread.sleep(FORCED_SHUTDOWN_SECONDS * 1000L);
+            } catch (InterruptedException e) {
+                return;
             }
-        });
-
-        forcedShutdownWatchdog.setDaemon(true);
-        forcedShutdownWatchdog.setName("EasyRestart-ForcedShutdownWatchdog");
-        forcedShutdownWatchdog.start();
+            LOGGER.error("EasyRestart: Server still running {}s after the restart began. Forcing exit.",
+                    FORCED_SHUTDOWN_SECONDS);
+            launchRestartScriptIfPending();
+            Runtime.getRuntime().halt(0);
+        }, "EasyRestart-ForcedShutdownWatchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
     }
 
     private void broadcast(MinecraftServer server, String msg) {
-        for (ServerPlayer p : server.getPlayerList().getPlayers()) {
-            p.sendSystemMessage(Component.literal(msg));
-        }
+        server.getPlayerList().broadcastSystemMessage(Component.literal(msg), false);
     }
 
-    private void broadcastPreWarning(MinecraftServer server, int minutes) {
-        String msg = ModConfig.SERVER.msgPreWarning.get()
-                .replace("{minutes}", String.valueOf(minutes));
-        broadcast(server, msg);
+    private void broadcastPreWarning(MinecraftServer server, long minutes) {
+        broadcast(server, ModConfig.SERVER.msgPreWarning.get().replace("{minutes}", String.valueOf(minutes)));
     }
 
     private void broadcastFinalCountdown(MinecraftServer server, long seconds) {
-        String msg = ModConfig.SERVER.msgFinalCountdown.get()
-                .replace("{seconds}", String.valueOf(seconds));
-        broadcast(server, msg);
+        broadcast(server, ModConfig.SERVER.msgFinalCountdown.get().replace("{seconds}", String.valueOf(seconds)));
         showTitle(server, "§c" + seconds);
     }
 
     private void playSound(MinecraftServer server) {
-        if (!ModConfig.SERVER.enableSounds.get())
+        if (!ModConfig.SERVER.enableSounds.get()) {
             return;
-
+        }
         for (ServerPlayer p : server.getPlayerList().getPlayers()) {
             p.playNotifySound(SoundEvents.NOTE_BLOCK_PLING.value(), p.getSoundSource(), 1f, 1f);
         }
     }
 
     private void showTitle(MinecraftServer server, String msg) {
-        if (!ModConfig.SERVER.enableTitles.get())
+        if (!ModConfig.SERVER.enableTitles.get()) {
             return;
-
+        }
+        ClientboundSetTitleTextPacket packet = new ClientboundSetTitleTextPacket(Component.literal(msg));
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            Component titleComponent = Component.literal(msg);
-            ClientboundSetTitleTextPacket packet = new ClientboundSetTitleTextPacket(titleComponent);
             player.connection.send(packet);
         }
     }
 
     public boolean isRestartScheduled() {
-        return restartScheduled;
+        return restartTime != null;
+    }
+
+    public boolean isManualRestart() {
+        return manual;
     }
 
     public LocalDateTime getRestartTime() {
